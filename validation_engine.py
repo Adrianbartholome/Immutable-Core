@@ -4,7 +4,7 @@ import os
 import psycopg2
 from datetime import datetime
 from google import genai
-import urllib.parse # <-- NEW REQUIRED LIBRARY
+import urllib.parse 
 
 # --- SECURE CLIENT INITIALIZATION (Phase 1) ---
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -120,14 +120,17 @@ def get_db_connection_string():
     port = os.environ.get("DB_PORT", "6543") # Pooler port
     sslmode = os.environ.get("DB_SSLMODE", "require")
 
+    # This check now runs during initialization, so we re-enable the informative error
     if not all([host, user, password, dbname]):
-        raise ValueError("Missing critical DB environment variables (HOST, USER, PASSWORD, or NAME).")
+        missing = []
+        if not host: missing.append("DB_HOST")
+        if not user: missing.append("DB_USER")
+        if not password: missing.append("DB_PASSWORD")
+        if not dbname: missing.append("DB_NAME")
+        raise ValueError(f"Missing critical DB environment variables: {', '.join(missing)}")
     
-    # CRITICAL FIX: URL encode the password to safely handle special characters
     encoded_password = urllib.parse.quote_plus(password)
     
-    # Standard PostgreSQL connection format (URI format is usually more reliable)
-    # The psycopg2 library will automatically handle the connection from this string.
     return (f"postgresql://{user}:{encoded_password}@{host}:{port}/{dbname}?sslmode={sslmode}")
 
 
@@ -136,6 +139,7 @@ class DBManager:
     
     def __init__(self):
         self.connection = None
+        # Initialize string immediately to catch config errors early
         self.connection_string = get_db_connection_string()
 
     def connect(self):
@@ -146,6 +150,7 @@ class DBManager:
                 self.connection.autocommit = False  
                 return self.connection
             except Exception as e:
+                # IMPORTANT: Raise a generic error here to prevent revealing internal details
                 raise RuntimeError(f"Database connection failed: {e}")
 
     def close(self):
@@ -159,6 +164,7 @@ class DBManager:
         """Loads the full Aether Token Dictionary from PostgreSQL into memory (cache)."""
         token_cache = {}
         cursor = None
+        conn = None # Ensure conn is defined for finally block
         try:
             conn = self.connect()
             cursor = conn.cursor()
@@ -175,11 +181,15 @@ class DBManager:
             return token_cache
 
         except Exception as e:
-            raise RuntimeError(f"CRITICAL: Failed to load token cache from DB. Compression is disabled. Error: {e}")
+            # Crucial: If cache loading fails, we DO NOT crash the process. 
+            # We log a warning and return an empty cache.
+            print(f"WARNING: Failed to load token cache. Compression disabled. Error: {e}")
+            return {}
             
         finally:
             if cursor:
                 cursor.close()
+            # We call self.close() which handles closing the connection gracefully
             self.close()
 
     # --- Task 4.3: COMMIT MEMORY (Transactional Write) ---
@@ -254,7 +264,6 @@ class DBManager:
             db_connection = self.connect()
             cursor = db_connection.cursor()
             
-            # SQL: Delete rows where score < threshold AND timestamp < (now - age_days)
             sql_purge = """
             DELETE FROM chronicles 
             WHERE weighted_score < %s 
@@ -326,13 +335,22 @@ def retrieve_last_hash(db_manager_instance):
 
 
 # --- ONE-TIME INITIALIZATION (Cold Start) ---
-# This block runs during the DigitalOcean Function environment initialization.
-# It loads the required external dependencies (token cache) once.
-db_initializer = DBManager()
+# CRITICAL FIX: Ensure initialization failure does not cause a fatal crash (connection refused 8080)
 try:
-    TOKEN_DICTIONARY_CACHE = db_initializer.load_token_cache()
-except RuntimeError as e:
-    print(f"Warning: Token cache failed to load during cold start: {e}. System defaulting to empty cache.")
+    # 1. Initialize DBManager (will fail here if environment variables are missing)
+    db_initializer = DBManager()
+    
+    # 2. Attempt to load the cache (will fail here if DB is unreachable or authentication is wrong)
+    # The load_token_cache method is now updated to return {} instead of raising RuntimeError on failure
+    TOKEN_DICTIONARY_CACHE = db_initializer.load_token_cache() 
+    
+except ValueError as e:
+    # Catch environment variable errors specifically
+    print(f"FATAL CONFIG ERROR: {e}. Token cache is empty.")
+    TOKEN_DICTIONARY_CACHE = {}
+except Exception as e:
+    # Catch any other critical initialization error (e.g., Gemini Client failure)
+    print(f"FATAL INITIALIZATION ERROR: {e}. Token cache is empty.")
     TOKEN_DICTIONARY_CACHE = {}
 
 
@@ -341,11 +359,18 @@ except RuntimeError as e:
 def main(event, context):
     """
     The main orchestration logic for the Aether Worker Application.
-    This function handles both 'commit' and 'purge' actions.
     """
     
     # 1. Instantiate the DB Manager
-    db_manager = DBManager()
+    try:
+        # A new DBManager is instantiated per invocation to manage connections safely
+        db_manager = DBManager()
+    except ValueError as e:
+        # If DB environment variables are missing (should have been caught in init but good redundancy)
+        return {
+            'statusCode': 500,
+            'body': json.dumps({'status': 'CONFIG ERROR', 'error': str(e)})
+        }
     
     try:
         # CHECK FOR PURGE TRIGGER (Scheduled Task)
@@ -359,7 +384,7 @@ def main(event, context):
 
         # DEFAULT ACTION: COMMIT NEW MEMORY
         
-        # 1. READ: Autonomously fetch the last hash (Optimization Fix)
+        # 1. READ: Autonomously fetch the last hash
         previous_hash_value = retrieve_last_hash(db_manager)
         
         # 2. SET MEMORY: Get the text from the event
@@ -385,7 +410,6 @@ def main(event, context):
         }
 
     except Exception as e:
-        # This catches errors that happen outside the commit_memory try block (e.g., initial DB connection failure)
         return {
             'statusCode': 500,
             'body': json.dumps({'status': 'FATAL AETHER CRASH', 'error': str(e)})
