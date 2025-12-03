@@ -40,6 +40,10 @@ MEMORY ENTRY:
 def generate_hash(memory_data, previous_hash_string):
     """
     Implements the core Hash Chain logic. New Hash = SHA256(Previous Hash + New Data).
+    
+    Args:
+        memory_data (dict): Contains 'timestamp', 'weighted_score', 'memory_text'.
+        previous_hash_string (str): The hash of the previous memory block.
     """
     if isinstance(memory_data.get("timestamp"), datetime):
         memory_data["timestamp"] = memory_data["timestamp"].isoformat()
@@ -181,7 +185,6 @@ class DBManager:
                 cursor.close()
             self.close()
 
-
     # --- Task 4.3: COMMIT MEMORY (Transactional Write) ---
     def commit_memory(self, previous_hash, raw_memory_text, gemini_client, token_cache):
         """
@@ -195,6 +198,7 @@ class DBManager:
             compressed_memory_text = encode_memory(raw_memory_text, token_cache)
 
             # 2. SCORE (Cognitive Service Access - using the raw text)
+            # CRITICAL FIX: The signature now correctly passes token_cache for decoding
             weighted_score = get_weighted_score(raw_memory_text, gemini_client, token_cache)
 
             # 3. ESTABLISH WRITE CONNECTION
@@ -252,7 +256,7 @@ class DBManager:
         
         try:
             db_connection = self.connect()
-            cursor = db_connection.cursor()
+            cursor = conn.cursor()
             
             # SQL: Delete rows where score < threshold AND timestamp < (now - age_days)
             sql_purge = """
@@ -341,7 +345,6 @@ def main(event, context):
     """
     
     # 1. Instantiate the DB Manager for the WRITE operation
-    # A fresh instance is needed for every call to ensure isolated transactions.
     db_manager = DBManager()
     
     try:
