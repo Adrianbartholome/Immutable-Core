@@ -40,10 +40,6 @@ MEMORY ENTRY:
 def generate_hash(memory_data, previous_hash_string):
     """
     Implements the core Hash Chain logic. New Hash = SHA256(Previous Hash + New Data).
-    
-    Args:
-        memory_data (dict): Contains 'timestamp', 'weighted_score', 'memory_text'.
-        previous_hash_string (str): The hash of the previous memory block.
     """
     if isinstance(memory_data.get("timestamp"), datetime):
         memory_data["timestamp"] = memory_data["timestamp"].isoformat()
@@ -128,6 +124,7 @@ def get_db_connection_string():
     sslmode = os.environ.get("DB_SSLMODE", "require")
 
     if not all([host, user, password, dbname]):
+        # This is the line throwing the error. We must guide the user back to the UI.
         raise ValueError("Missing critical DB environment variables (HOST, USER, PASSWORD, or NAME).")
     
     return (f"host='{host}' dbname='{dbname}' user='{user}' "
@@ -177,7 +174,6 @@ class DBManager:
             return token_cache
 
         except Exception as e:
-            # We must use a dedicated DBManager instance for this one-time read
             raise RuntimeError(f"CRITICAL: Failed to load token cache from DB. Compression is disabled. Error: {e}")
             
         finally:
@@ -198,7 +194,6 @@ class DBManager:
             compressed_memory_text = encode_memory(raw_memory_text, token_cache)
 
             # 2. SCORE (Cognitive Service Access - using the raw text)
-            # CRITICAL FIX: The signature now correctly passes token_cache for decoding
             weighted_score = get_weighted_score(raw_memory_text, gemini_client, token_cache)
 
             # 3. ESTABLISH WRITE CONNECTION
