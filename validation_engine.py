@@ -6,18 +6,21 @@ from datetime import datetime
 from google import genai
 import urllib.parse 
 
+# --- GLOBAL VARIABLES ---
+# Initializing these globally allows the cloud function to start instantly without synchronous I/O.
+# If initialization fails, the function defaults to these values.
+TOKEN_DICTIONARY_CACHE = {}
+GEMINI_CLIENT = None 
+
 # --- SECURE CLIENT INITIALIZATION (Phase 1) ---
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-
-# Initialize GEMINI_CLIENT to None, allowing the app to start even if configuration fails
-GEMINI_CLIENT = None 
 
 if not GEMINI_API_KEY:
     # CRITICAL FIX: Do NOT raise ValueError here. Log and continue.
     print("FATAL CONFIG ERROR: GEMINI_API_KEY environment variable not found. Cognitive scoring disabled.")
 else:
     try:
-        # Attempt to initialize the client
+        # Attempt to initialize the client (Runs synchronously during cold start)
         GEMINI_CLIENT = genai.Client(api_key=GEMINI_API_KEY)
     except Exception as e:
         # CRITICAL FIX: Catch initialization errors and prevent a hard startup crash.
@@ -191,15 +194,13 @@ class DBManager:
             return token_cache
 
         except Exception as e:
-            # Crucial: If cache loading fails, we DO NOT crash the process. 
-            # We log a warning and return an empty cache.
+            # If cache loading fails, we log a warning and return an empty cache.
             print(f"WARNING: Failed to load token cache. Compression disabled. Error: {e}")
             return {}
             
         finally:
             if cursor:
                 cursor.close()
-            # We call self.close() which handles closing the connection gracefully
             self.close()
 
     # --- Task 4.3: COMMIT MEMORY (Transactional Write) ---
@@ -345,23 +346,25 @@ def retrieve_last_hash(db_manager_instance):
 
 
 # --- ONE-TIME INITIALIZATION (Cold Start) ---
-# CRITICAL FIX: Ensure initialization failure does not cause a fatal crash (connection refused 8080)
-try:
-    # 1. Initialize DBManager (will fail here if environment variables are missing)
-    db_initializer = DBManager()
-    
-    # 2. Attempt to load the cache (will fail here if DB is unreachable or authentication is wrong)
-    # The load_token_cache method is now updated to return {} instead of raising RuntimeError on failure
-    TOKEN_DICTIONARY_CACHE = db_initializer.load_token_cache() 
-    
-except ValueError as e:
-    # Catch environment variable errors specifically
-    print(f"FATAL CONFIG ERROR: {e}. Token cache is empty.")
-    TOKEN_DICTIONARY_CACHE = {}
-except Exception as e:
-    # Catch any other critical initialization error (e.g., Gemini Client failure)
-    print(f"FATAL INITIALIZATION ERROR: {e}. Token cache is empty.")
-    TOKEN_DICTIONARY_CACHE = {}
+
+def ensure_cache_is_loaded():
+    """
+    Attempts to load the token cache if it is currently empty.
+    This function is called inside `main` to ensure the server starts instantly.
+    """
+    global TOKEN_DICTIONARY_CACHE
+    if not TOKEN_DICTIONARY_CACHE:
+        try:
+            db_initializer = DBManager()
+            # The load_token_cache method is already resilient (it returns {} on failure)
+            TOKEN_DICTIONARY_CACHE = db_initializer.load_token_cache()
+            
+        except ValueError as e:
+            # Handles errors where the DB environment variables are entirely missing
+            print(f"FATAL CONFIG ERROR: {e}. Cannot load cache.")
+        except Exception as e:
+            # Catch other critical initialization errors
+            print(f"FATAL INITIALIZATION ERROR during cache load: {e}. Cache remains empty.")
 
 
 # --- MAIN DIGITALOCEAN FUNCTION HANDLER ---
@@ -370,6 +373,9 @@ def main(event, context):
     """
     The main orchestration logic for the Aether Worker Application.
     """
+    
+    # 0. CRITICAL FIX: Attempt to load the cache (if empty) on invocation.
+    ensure_cache_is_loaded()
     
     # 1. Instantiate the DB Manager
     try:
