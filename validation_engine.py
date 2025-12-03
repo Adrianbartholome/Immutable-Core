@@ -129,11 +129,28 @@ def get_db_connection_string():
     return (f"host='{host}' dbname='{dbname}' user='{user}' "
             f"password='{password}' port='{port}' sslmode='{sslmode}'")
 
+# --- DATABASE CONNECTION STRING ASSEMBLY (Phase 4) ---
+
+def get_db_connection_string():
+    """Retrieves the full PostgreSQL connection URI from environment variables."""
+    # We rely on a single, industry-standard variable for connection string now.
+    connection_url = os.environ.get("DATABASE_URL")
+
+    if not connection_url:
+        # Fails if the combined URI is missing.
+        raise ValueError(
+            "CRITICAL: Missing DATABASE_URL environment variable. Cannot connect to the Immutable Core."
+        )
+    
+    # We do not need to assemble host/port/user/pass separately anymore.
+    return connection_url 
+
 class DBManager:
     """Manages the secure connection and transaction lifecycle."""
     
     def __init__(self):
         self.connection = None
+        # Uses the new single variable structure
         self.connection_string = get_db_connection_string()
 
     def connect(self):
