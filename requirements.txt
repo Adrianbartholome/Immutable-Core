@@ -1,0 +1,13 @@
+PostgreSQL Connector for psycopg2
+
+Use 'psycopg2-binary' for simplified deployment in serverless/container environments
+
+psycopg2-binary
+
+Google Gemini API SDK (Official and recommended library)
+
+google-genai
+
+Used internally for JSON parsing, hashing, etc. (Already in code, good to list)
+
+(Though hashlib, json, datetime are standard library, listing is good practice)
