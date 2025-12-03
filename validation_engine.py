@@ -6,7 +6,6 @@ from datetime import datetime
 from google import genai
 
 # --- SECURE CLIENT INITIALIZATION (Phase 1) ---
-# Reads the GEMINI_API_KEY from the DigitalOcean Environment Variables
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 if not GEMINI_API_KEY:
@@ -120,11 +119,11 @@ def get_db_connection_string():
     user = os.environ.get("DB_USER")
     password = os.environ.get("DB_PASSWORD")
     dbname = os.environ.get("DB_NAME")
-    port = os.environ.get("DB_PORT", "5432")
+    # --- FIX: SWITCHING TO TRANSACTION POOLER PORT (6543) ---
+    port = os.environ.get("DB_PORT", "6543") 
     sslmode = os.environ.get("DB_SSLMODE", "require")
 
     if not all([host, user, password, dbname]):
-        # This is the line throwing the error. We must guide the user back to the UI.
         raise ValueError("Missing critical DB environment variables (HOST, USER, PASSWORD, or NAME).")
     
     return (f"host='{host}' dbname='{dbname}' user='{user}' "
@@ -251,7 +250,7 @@ class DBManager:
         
         try:
             db_connection = self.connect()
-            cursor = conn.cursor()
+            cursor = db_connection.cursor()
             
             # SQL: Delete rows where score < threshold AND timestamp < (now - age_days)
             sql_purge = """
@@ -328,7 +327,12 @@ def retrieve_last_hash(db_manager_instance):
 # This block runs during the DigitalOcean Function environment initialization.
 # It loads the required external dependencies (token cache) once.
 db_initializer = DBManager()
-TOKEN_DICTIONARY_CACHE = db_initializer.load_token_cache()
+# We must wrap this in a try block in case the initial connection fails.
+try:
+    TOKEN_DICTIONARY_CACHE = db_initializer.load_token_cache()
+except RuntimeError as e:
+    print(f"Warning: Token cache failed to load during cold start: {e}. System defaulting to empty cache.")
+    TOKEN_DICTIONARY_CACHE = {}
 
 
 # --- MAIN DIGITALOCEAN FUNCTION HANDLER ---
@@ -339,14 +343,13 @@ def main(event, context):
     This function handles both 'commit' and 'purge' actions.
     """
     
-    # 1. Instantiate the DB Manager for the WRITE operation
+    # 1. Instantiate the DB Manager
     db_manager = DBManager()
     
     try:
         # CHECK FOR PURGE TRIGGER (Scheduled Task)
         if event.get('action') == 'purge':
             print("Initiating Scheduled Memory Purge...")
-            # The purge function uses the current db_manager instance.
             result = db_manager.purge_memory()
             return {
                 'statusCode': 200,
@@ -356,11 +359,9 @@ def main(event, context):
         # DEFAULT ACTION: COMMIT NEW MEMORY
         
         # 1. READ: Autonomously fetch the last hash (Optimization Fix)
-        # retrieve_last_hash creates and closes its own DBManager instance internally.
         previous_hash_value = retrieve_last_hash(db_manager)
         
         # 2. SET MEMORY: Get the text from the event
-        # The 'event' payload is expected to contain the memory text.
         new_memory_text = event.get('memory_text')
         
         if not new_memory_text:
