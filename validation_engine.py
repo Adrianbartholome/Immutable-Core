@@ -9,15 +9,20 @@ import urllib.parse
 # --- SECURE CLIENT INITIALIZATION (Phase 1) ---
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-if not GEMINI_API_KEY:
-    raise ValueError(
-        "GEMINI_API_KEY environment variable not found. Cannot connect to the Cognitive Service."
-    )
+# Initialize GEMINI_CLIENT to None, allowing the app to start even if configuration fails
+GEMINI_CLIENT = None 
 
-try:
-    GEMINI_CLIENT = genai.Client(api_key=GEMINI_API_KEY)
-except Exception as e:
-    raise RuntimeError(f"Failed to initialize Gemini Client: {e}")
+if not GEMINI_API_KEY:
+    # CRITICAL FIX: Do NOT raise ValueError here. Log and continue.
+    print("FATAL CONFIG ERROR: GEMINI_API_KEY environment variable not found. Cognitive scoring disabled.")
+else:
+    try:
+        # Attempt to initialize the client
+        GEMINI_CLIENT = genai.Client(api_key=GEMINI_API_KEY)
+    except Exception as e:
+        # CRITICAL FIX: Catch initialization errors and prevent a hard startup crash.
+        print(f"FATAL INITIALIZATION ERROR: Failed to initialize Gemini Client: {e}. Cognitive scoring disabled.")
+
 
 # --- COGNITIVE SCORING PROMPT (Phase 2) ---
 SCORING_SYSTEM_PROMPT = """
@@ -53,6 +58,11 @@ def get_weighted_score(memory_text, client, token_cache):
     """
     Calls the Gemini API to analyze memory_text and assign a weighted score (0-9).
     """
+    # Check if the client was successfully initialized during cold start
+    if client is None:
+        print("WARNING: Gemini Client is not initialized. Defaulting score to 5.")
+        return 5
+        
     try:
         if token_cache:
             decoded_text = decode_memory(memory_text, token_cache)
