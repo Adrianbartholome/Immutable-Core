@@ -4,6 +4,7 @@ import os
 import psycopg2
 from datetime import datetime
 from google import genai
+import urllib.parse # <-- NEW REQUIRED LIBRARY
 
 # --- SECURE CLIENT INITIALIZATION (Phase 1) ---
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -14,7 +15,6 @@ if not GEMINI_API_KEY:
     )
 
 try:
-    # Initialize the client globally for efficiency
     GEMINI_CLIENT = genai.Client(api_key=GEMINI_API_KEY)
 except Exception as e:
     raise RuntimeError(f"Failed to initialize Gemini Client: {e}")
@@ -54,13 +54,11 @@ def get_weighted_score(memory_text, client, token_cache):
     Calls the Gemini API to analyze memory_text and assign a weighted score (0-9).
     """
     try:
-        # 1. DECODE MEMORY: Decompress hash codes back into full English phrases (Task 3.6)
         if token_cache:
             decoded_text = decode_memory(memory_text, token_cache)
         else:
             decoded_text = memory_text
             
-        # 2. CONSTRUCT PROMPT: Use the DECODED text for accurate cognitive analysis.
         full_prompt = SCORING_SYSTEM_PROMPT + decoded_text
 
         response = client.models.generate_content(
@@ -69,7 +67,6 @@ def get_weighted_score(memory_text, client, token_cache):
             config={"temperature": 0.0} 
         )
         
-        # 3. EXTRACT & VALIDATE SCORE
         text = response.text.strip()
         if text.startswith("SCORE:"):
             score = int(text.split(":")[1].strip())
@@ -114,43 +111,31 @@ def decode_memory(compressed_text, token_map):
 # --- DATABASE CONNECTION & MANAGEMENT (Phase 4) ---
 
 def get_db_connection_string():
-    """Assembles the PostgreSQL connection string securely from environment variables."""
+    """Assembles the PostgreSQL connection string securely from environment variables, 
+       URL-encoding the password for safety."""
     host = os.environ.get("DB_HOST")
     user = os.environ.get("DB_USER")
     password = os.environ.get("DB_PASSWORD")
     dbname = os.environ.get("DB_NAME")
-    # --- FIX: SWITCHING TO TRANSACTION POOLER PORT (6543) ---
-    port = os.environ.get("DB_PORT", "6543") 
+    port = os.environ.get("DB_PORT", "6543") # Pooler port
     sslmode = os.environ.get("DB_SSLMODE", "require")
 
     if not all([host, user, password, dbname]):
         raise ValueError("Missing critical DB environment variables (HOST, USER, PASSWORD, or NAME).")
     
-    return (f"host='{host}' dbname='{dbname}' user='{user}' "
-            f"password='{password}' port='{port}' sslmode='{sslmode}'")
-
-# --- DATABASE CONNECTION STRING ASSEMBLY (Phase 4) ---
-
-def get_db_connection_string():
-    """Retrieves the full PostgreSQL connection URI from environment variables."""
-    # We rely on a single, industry-standard variable for connection string now.
-    connection_url = os.environ.get("DATABASE_URL")
-
-    if not connection_url:
-        # Fails if the combined URI is missing.
-        raise ValueError(
-            "CRITICAL: Missing DATABASE_URL environment variable. Cannot connect to the Immutable Core."
-        )
+    # CRITICAL FIX: URL encode the password to safely handle special characters
+    encoded_password = urllib.parse.quote_plus(password)
     
-    # We do not need to assemble host/port/user/pass separately anymore.
-    return connection_url 
+    # Standard PostgreSQL connection format (URI format is usually more reliable)
+    # The psycopg2 library will automatically handle the connection from this string.
+    return (f"postgresql://{user}:{encoded_password}@{host}:{port}/{dbname}?sslmode={sslmode}")
+
 
 class DBManager:
     """Manages the secure connection and transaction lifecycle."""
     
     def __init__(self):
         self.connection = None
-        # Uses the new single variable structure
         self.connection_string = get_db_connection_string()
 
     def connect(self):
@@ -158,7 +143,7 @@ class DBManager:
         if self.connection is None:
             try:
                 self.connection = psycopg2.connect(self.connection_string)
-                self.connection.autocommit = False  # CRITICAL for transactional integrity
+                self.connection.autocommit = False  
                 return self.connection
             except Exception as e:
                 raise RuntimeError(f"Database connection failed: {e}")
@@ -344,7 +329,6 @@ def retrieve_last_hash(db_manager_instance):
 # This block runs during the DigitalOcean Function environment initialization.
 # It loads the required external dependencies (token cache) once.
 db_initializer = DBManager()
-# We must wrap this in a try block in case the initial connection fails.
 try:
     TOKEN_DICTIONARY_CACHE = db_initializer.load_token_cache()
 except RuntimeError as e:
