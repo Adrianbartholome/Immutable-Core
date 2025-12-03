@@ -430,3 +430,11 @@ def main(event, context):
             'statusCode': 500,
             'body': json.dumps({'status': 'FATAL AETHER CRASH', 'error': str(e)})
         }
+
+# --- FUNCTION ENTRYPOINT HANDLER (DigitalOcean Requirement) ---
+# NOTE: If running as a DO Function, the deployment configuration must point 
+# to 'validation_engine.main' (file.function) as the handler.
+if __name__ == "__main__":
+    # Local execution/testing block can be added here if needed, but for cloud-only, 
+    # it's often left blank or configured for dummy event data.
+    pass
