@@ -362,44 +362,46 @@ def ensure_cache_is_loaded():
 
 
 # --- MAIN APPLICATION LOGIC (Replaces the old 'main' handler) ---
+# --- MODIFIED APPLICATION LOGIC ---
 def application_logic(event):
-    """
-    Core logic: handles commit and purge actions based on the incoming event data.
-    Returns the raw result dictionary.
-    """
-    
-    # 0. CRITICAL FIX: Attempt to load the cache (if empty) on invocation.
     ensure_cache_is_loaded()
     
-    # 1. Instantiate the DB Manager
     try:
         db_manager = DBManager()
     except ValueError as e:
-        return {
-            'statusCode': 500,
-            'body': json.dumps({'status': 'CONFIG ERROR', 'error': str(e)})
-        }
+        return {'statusCode': 500, 'body': json.dumps({'status': 'CONFIG ERROR', 'error': str(e)})}
     
     try:
-        # CHECK FOR PURGE TRIGGER (Scheduled Task)
+        # 1. CHECK FOR PURGE (Maintenance)
         if event.get('action') == 'purge':
             print("Initiating Scheduled Memory Purge...")
             result = db_manager.purge_memory()
-            return {
-                'statusCode': 200,
-                'body': json.dumps(result)
-            }
+            return {'statusCode': 200, 'body': json.dumps(result)}
 
-        # DEFAULT ACTION: COMMIT NEW MEMORY
-        previous_hash_value = retrieve_last_hash(db_manager)
+        # 2. EXTRACT DATA
         new_memory_text = event.get('memory_text')
-        
+        should_persist = event.get('persist', True) # Defaults to TRUE to maintain existing behavior unless specified
+
         if not new_memory_text:
-            return {
-                'statusCode': 200,
-                'body': json.dumps({'status': 'HEARTBEAT', 'message': 'System Online. No memory provided.'})
-            }
-        
+            return {'statusCode': 200, 'body': json.dumps({'status': 'HEARTBEAT', 'message': 'System Online.'})}
+
+        # 3. EPHEMERAL MODE (The Fix)
+        # If persist is False, we just score it or acknowledge it, but DO NOT touch the DB.
+        if not should_persist:
+             # Optional: You could still get a score if you want to know how SNEGO-P perceives it
+             # without saving it.
+             score = get_weighted_score(new_memory_text, GEMINI_CLIENT, TOKEN_DICTIONARY_CACHE)
+             return {
+                 'statusCode': 200, 
+                 'body': json.dumps({
+                     'status': 'EPHEMERAL_ACK', 
+                     'score': score, 
+                     'message': 'Context received but not committed to Immutable Core.'
+                 })
+             }
+
+        # 4. COMMIT MODE (Standard Operation)
+        previous_hash_value = retrieve_last_hash(db_manager)
         result = db_manager.commit_memory(
             previous_hash_value,
             new_memory_text, 
@@ -407,16 +409,10 @@ def application_logic(event):
             TOKEN_DICTIONARY_CACHE
         )
         
-        return {
-            'statusCode': 200,
-            'body': json.dumps(result)
-        }
+        return {'statusCode': 200, 'body': json.dumps(result)}
 
     except Exception as e:
-        return {
-            'statusCode': 500,
-            'body': json.dumps({'status': 'FATAL AETHER CRASH', 'error': str(e)})
-        }
+        return {'statusCode': 500, 'body': json.dumps({'status': 'FATAL AETHER CRASH', 'error': str(e)})}
 
 
 # --- FLASK HANDLER (Bridges your logic to Gunicorn) ---
