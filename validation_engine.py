@@ -5,10 +5,9 @@ import psycopg2
 from datetime import datetime
 from google import genai
 import urllib.parse 
-from flask import Flask, request, jsonify # <-- NEW: Import Flask components
+from flask import Flask, request, jsonify 
 
 # --- FLASK APP INSTANCE ---
-# This object is what Gunicorn will run.
 app = Flask(__name__)
 
 # --- GLOBAL VARIABLES ---
@@ -25,9 +24,6 @@ else:
         GEMINI_CLIENT = genai.Client(api_key=GEMINI_API_KEY)
     except Exception as e:
         print(f"FATAL INITIALIZATION ERROR: Failed to initialize Gemini Client: {e}. Cognitive scoring disabled.")
-
-# --- (The rest of your helper functions: SCORING_SYSTEM_PROMPT, generate_hash, get_weighted_score, etc. remain here) ---
-# ... (Functions are not repeated here for brevity, assume they are still defined)
 
 # --- COGNITIVE SCORING PROMPT (Phase 2) ---
 SCORING_SYSTEM_PROMPT = """
@@ -135,7 +131,6 @@ def get_db_connection_string():
     port = os.environ.get("DB_PORT", "6543") # Pooler port
     sslmode = os.environ.get("DB_SSLMODE", "require")
 
-    # This check now runs during initialization, so we re-enable the informative error
     if not all([host, user, password, dbname]):
         missing = []
         if not host: missing.append("DB_HOST")
@@ -154,7 +149,6 @@ class DBManager:
     
     def __init__(self):
         self.connection = None
-        # Initialize string immediately to catch config errors early
         self.connection_string = get_db_connection_string()
 
     def connect(self):
@@ -165,7 +159,6 @@ class DBManager:
                 self.connection.autocommit = False  
                 return self.connection
             except Exception as e:
-                # IMPORTANT: Raise a generic error here to prevent revealing internal details
                 raise RuntimeError(f"Database connection failed: {e}")
 
     def close(self):
@@ -179,7 +172,7 @@ class DBManager:
         """Loads the full Aether Token Dictionary from PostgreSQL into memory (cache)."""
         token_cache = {}
         cursor = None
-        conn = None # Ensure conn is defined for finally block
+        conn = None 
         try:
             conn = self.connect()
             cursor = conn.cursor()
@@ -196,7 +189,6 @@ class DBManager:
             return token_cache
 
         except Exception as e:
-            # If cache loading fails, we log a warning and return an empty cache.
             print(f"WARNING: Failed to load token cache. Compression disabled. Error: {e}")
             return {}
             
@@ -235,7 +227,7 @@ class DBManager:
             # 5. EXECUTE TRANSACTIONAL INSERT
             cursor = db_connection.cursor()
             sql_insert = """
-            INSERT INTO chronicles (weighted_score, timestamp, memory_text, previous_hash, current_hash)
+            INSERT INTO chronicles (weighted_score, created_at, memory_text, previous_hash, current_hash)
             VALUES (%s, %s, %s, %s, %s);
             """
             cursor.execute(sql_insert, (
@@ -358,14 +350,11 @@ def ensure_cache_is_loaded():
     if not TOKEN_DICTIONARY_CACHE:
         try:
             db_initializer = DBManager()
-            # The load_token_cache method is already resilient (it returns {} on failure)
             TOKEN_DICTIONARY_CACHE = db_initializer.load_token_cache()
             
         except ValueError as e:
-            # Handles errors where the DB environment variables are entirely missing
             print(f"FATAL CONFIG ERROR: {e}. Cannot load cache.")
         except Exception as e:
-            # Catch other critical initialization errors
             print(f"FATAL INITIALIZATION ERROR during cache load: {e}. Cache remains empty.")
 
 
