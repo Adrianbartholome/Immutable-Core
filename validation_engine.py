@@ -46,8 +46,8 @@ def generate_hash(memory_data, previous_hash_string):
     """
     Implements the core Hash Chain logic. New Hash = SHA256(Previous Hash + New Data).
     """
-    if isinstance(memory_data.get("timestamp"), datetime):
-        memory_data["timestamp"] = memory_data["timestamp"].isoformat()
+    if isinstance(memory_data.get("created_at"), datetime):
+        memory_data["created_at"] = memory_data["created_at"].isoformat()
 
     data_block_string = json.dumps(memory_data, sort_keys=True)
     raw_content = previous_hash_string + data_block_string
@@ -218,7 +218,7 @@ class DBManager:
             # 4. PREPARE & HASH NEW BLOCK
             new_timestamp = datetime.now()
             memory_data_for_hash = {
-                "timestamp": new_timestamp,
+                "created_at": new_timestamp,
                 "weighted_score": weighted_score,
                 "memory_text": compressed_memory_text 
             }
@@ -269,10 +269,11 @@ class DBManager:
             db_connection = self.connect()
             cursor = db_connection.cursor()
             
+            # CRITICAL FIX: Changed 'timestamp' to 'created_at' to match the database schema
             sql_purge = """
             DELETE FROM chronicles 
             WHERE weighted_score < %s 
-            AND timestamp < NOW() - INTERVAL '%s days';
+            AND created_at < NOW() - INTERVAL '%s days';
             """
             
             cursor.execute(sql_purge, (threshold_score, age_days))
