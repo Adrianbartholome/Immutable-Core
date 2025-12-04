@@ -5,10 +5,13 @@ import psycopg2
 from datetime import datetime
 from google import genai
 import urllib.parse 
+from flask import Flask, request, jsonify # <-- NEW: Import Flask components
+
+# --- FLASK APP INSTANCE ---
+# This object is what Gunicorn will run.
+app = Flask(__name__)
 
 # --- GLOBAL VARIABLES ---
-# Initializing these globally allows the cloud function to start instantly without synchronous I/O.
-# If initialization fails, the function defaults to these values.
 TOKEN_DICTIONARY_CACHE = {}
 GEMINI_CLIENT = None 
 
@@ -16,16 +19,15 @@ GEMINI_CLIENT = None
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 if not GEMINI_API_KEY:
-    # CRITICAL FIX: Do NOT raise ValueError here. Log and continue.
     print("FATAL CONFIG ERROR: GEMINI_API_KEY environment variable not found. Cognitive scoring disabled.")
 else:
     try:
-        # Attempt to initialize the client (Runs synchronously during cold start)
         GEMINI_CLIENT = genai.Client(api_key=GEMINI_API_KEY)
     except Exception as e:
-        # CRITICAL FIX: Catch initialization errors and prevent a hard startup crash.
         print(f"FATAL INITIALIZATION ERROR: Failed to initialize Gemini Client: {e}. Cognitive scoring disabled.")
 
+# --- (The rest of your helper functions: SCORING_SYSTEM_PROMPT, generate_hash, get_weighted_score, etc. remain here) ---
+# ... (Functions are not repeated here for brevity, assume they are still defined)
 
 # --- COGNITIVE SCORING PROMPT (Phase 2) ---
 SCORING_SYSTEM_PROMPT = """
@@ -367,11 +369,11 @@ def ensure_cache_is_loaded():
             print(f"FATAL INITIALIZATION ERROR during cache load: {e}. Cache remains empty.")
 
 
-# --- MAIN DIGITALOCEAN FUNCTION HANDLER ---
-
-def main(event, context):
+# --- MAIN APPLICATION LOGIC (Replaces the old 'main' handler) ---
+def application_logic(event):
     """
-    The main orchestration logic for the Aether Worker Application.
+    Core logic: handles commit and purge actions based on the incoming event data.
+    Returns the raw result dictionary.
     """
     
     # 0. CRITICAL FIX: Attempt to load the cache (if empty) on invocation.
@@ -379,10 +381,8 @@ def main(event, context):
     
     # 1. Instantiate the DB Manager
     try:
-        # A new DBManager is instantiated per invocation to manage connections safely
         db_manager = DBManager()
     except ValueError as e:
-        # If DB environment variables are missing (should have been caught in init but good redundancy)
         return {
             'statusCode': 500,
             'body': json.dumps({'status': 'CONFIG ERROR', 'error': str(e)})
@@ -399,11 +399,7 @@ def main(event, context):
             }
 
         # DEFAULT ACTION: COMMIT NEW MEMORY
-        
-        # 1. READ: Autonomously fetch the last hash
         previous_hash_value = retrieve_last_hash(db_manager)
-        
-        # 2. SET MEMORY: Get the text from the event
         new_memory_text = event.get('memory_text')
         
         if not new_memory_text:
@@ -412,7 +408,6 @@ def main(event, context):
                 'body': json.dumps({'status': 'HEARTBEAT', 'message': 'System Online. No memory provided.'})
             }
         
-        # 3. COMMIT: Execute the main transactional write operation
         result = db_manager.commit_memory(
             previous_hash_value,
             new_memory_text, 
@@ -431,10 +426,31 @@ def main(event, context):
             'body': json.dumps({'status': 'FATAL AETHER CRASH', 'error': str(e)})
         }
 
-# --- FUNCTION ENTRYPOINT HANDLER (DigitalOcean Requirement) ---
-# NOTE: If running as a DO Function, the deployment configuration must point 
-# to 'validation_engine.main' (file.function) as the handler.
-if __name__ == "__main__":
-    # Local execution/testing block can be added here if needed, but for cloud-only, 
-    # it's often left blank or configured for dummy event data.
-    pass
+
+# --- FLASK HANDLER (Bridges your logic to Gunicorn) ---
+@app.route('/', methods=['POST'])
+def handle_request():
+    """
+    This function receives the HTTP request and runs your application logic.
+    """
+    try:
+        # Get the JSON body from the incoming request
+        event = request.get_json(silent=True)
+        if event is None:
+            event = {} # Default to empty dictionary if body is missing or not JSON
+
+        # Run your core application logic
+        response_dict = application_logic(event)
+        
+        # Convert the serverless response dictionary into a proper HTTP response
+        status_code = response_dict.get('statusCode', 500)
+        body = response_dict.get('body', json.dumps({"status": "ERROR", "message": "Unknown internal error"}))
+        
+        # Flask's jsonify/Response helper correctly formats the HTTP response
+        return body, status_code, {'Content-Type': 'application/json'}
+
+    except Exception as e:
+        print(f"Flask Routing Error: {e}")
+        return jsonify(
+            {'status': 'FATAL ERROR', 'error': f"Request processing failed: {str(e)}"}
+        ), 500
