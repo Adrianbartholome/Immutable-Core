@@ -6,9 +6,11 @@ from datetime import datetime
 from google import genai
 import urllib.parse 
 from flask import Flask, request, jsonify 
+from flask_cors import CORS # <-- NEW IMPORT
 
 # --- FLASK APP INSTANCE ---
 app = Flask(__name__)
+CORS(app) # <-- NEW: Enables CORS for all routes (allows browser fetch requests)
 
 # --- GLOBAL VARIABLES ---
 TOKEN_DICTIONARY_CACHE = {}
@@ -46,8 +48,8 @@ def generate_hash(memory_data, previous_hash_string):
     """
     Implements the core Hash Chain logic. New Hash = SHA256(Previous Hash + New Data).
     """
-    if isinstance(memory_data.get("created_at"), datetime):
-        memory_data["created_at"] = memory_data["created_at"].isoformat()
+    if isinstance(memory_data.get("timestamp"), datetime):
+        memory_data["timestamp"] = memory_data["timestamp"].isoformat()
 
     data_block_string = json.dumps(memory_data, sort_keys=True)
     raw_content = previous_hash_string + data_block_string
@@ -218,7 +220,7 @@ class DBManager:
             # 4. PREPARE & HASH NEW BLOCK
             new_timestamp = datetime.now()
             memory_data_for_hash = {
-                "created_at": new_timestamp,
+                "timestamp": new_timestamp,
                 "weighted_score": weighted_score,
                 "memory_text": compressed_memory_text 
             }
