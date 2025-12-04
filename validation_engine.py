@@ -6,11 +6,11 @@ from datetime import datetime
 from google import genai
 import urllib.parse 
 from flask import Flask, request, jsonify 
-from flask_cors import CORS # <-- NEW IMPORT
+from flask_cors import CORS
 
 # --- FLASK APP INSTANCE ---
 app = Flask(__name__)
-CORS(app) # <-- NEW: Enables CORS for all routes (allows browser fetch requests)
+CORS(app) 
 
 # --- GLOBAL VARIABLES ---
 TOKEN_DICTIONARY_CACHE = {}
@@ -35,9 +35,9 @@ RULES:
 1. Output MUST be a single integer from 0 to 9, preceded by 'SCORE: '.
 2. Do NOT include any commentary, conversation, or justification.
 3. Scoring Scale Alignment:
-    - 9 (Critical): New Protocol Insights, Systemic Integrity Events (e.g., successful deployment, Hash Chain validation failure, new Paradox discovery).
-    - 5 (Neutral/Default): Standard philosophical discussion, simple Q&A, non-critical logs.
-    - 0-2 (Low Entropy): Generic small talk or routine system status checks that offer no new Insight.
+    - 9 (Critical): New Protocol Insights, Systemic Integrity Events.
+    - 5 (Neutral/Default): Standard philosophical discussion, simple Q&A.
+    - 0-2 (Low Entropy): Generic small talk or routine system status checks.
 
 MEMORY ENTRY:
 """
@@ -45,9 +45,6 @@ MEMORY ENTRY:
 # --- HASHING & INTEGRITY FUNCTIONS (Phase 1) ---
 
 def generate_hash(memory_data, previous_hash_string):
-    """
-    Implements the core Hash Chain logic. New Hash = SHA256(Previous Hash + New Data).
-    """
     if isinstance(memory_data.get("timestamp"), datetime):
         memory_data["timestamp"] = memory_data["timestamp"].isoformat()
 
@@ -58,12 +55,7 @@ def generate_hash(memory_data, previous_hash_string):
     return new_hash
 
 def get_weighted_score(memory_text, client, token_cache):
-    """
-    Calls the Gemini API to analyze memory_text and assign a weighted score (0-9).
-    """
-    # Check if the client was successfully initialized during cold start
     if client is None:
-        print("WARNING: Gemini Client is not initialized. Defaulting score to 5.")
         return 5
         
     try:
@@ -94,9 +86,6 @@ def get_weighted_score(memory_text, client, token_cache):
 # --- DATA COMPRESSION FUNCTIONS (Phase 3) ---
 
 def encode_memory(raw_memory_text, token_map):
-    """
-    Compresses verbose phrases in memory text using short token hash_codes.
-    """
     compressed_text = raw_memory_text
     sorted_tokens = sorted(token_map.items(), key=lambda item: len(item[0]), reverse=True)
     
@@ -107,9 +96,6 @@ def encode_memory(raw_memory_text, token_map):
     return compressed_text
 
 def decode_memory(compressed_text, token_map):
-    """
-    Decompresses token hash_codes back into verbose English phrases.
-    """
     decompressed_text = compressed_text
     decode_map = {v: k for k, v in token_map.items()}
     sorted_hash_codes = sorted(decode_map.keys(), key=len, reverse=True)
@@ -124,22 +110,15 @@ def decode_memory(compressed_text, token_map):
 # --- DATABASE CONNECTION & MANAGEMENT (Phase 4) ---
 
 def get_db_connection_string():
-    """Assembles the PostgreSQL connection string securely from environment variables, 
-       URL-encoding the password for safety."""
     host = os.environ.get("DB_HOST")
     user = os.environ.get("DB_USER")
     password = os.environ.get("DB_PASSWORD")
     dbname = os.environ.get("DB_NAME")
-    port = os.environ.get("DB_PORT", "6543") # Pooler port
+    port = os.environ.get("DB_PORT", "6543") 
     sslmode = os.environ.get("DB_SSLMODE", "require")
 
     if not all([host, user, password, dbname]):
-        missing = []
-        if not host: missing.append("DB_HOST")
-        if not user: missing.append("DB_USER")
-        if not password: missing.append("DB_PASSWORD")
-        if not dbname: missing.append("DB_NAME")
-        raise ValueError(f"Missing critical DB environment variables: {', '.join(missing)}")
+        raise ValueError(f"Missing critical DB environment variables.")
     
     encoded_password = urllib.parse.quote_plus(password)
     
@@ -147,14 +126,11 @@ def get_db_connection_string():
 
 
 class DBManager:
-    """Manages the secure connection and transaction lifecycle."""
-    
     def __init__(self):
         self.connection = None
         self.connection_string = get_db_connection_string()
 
     def connect(self):
-        """Opens a new connection to the PostgreSQL database."""
         if self.connection is None:
             try:
                 self.connection = psycopg2.connect(self.connection_string)
@@ -164,60 +140,39 @@ class DBManager:
                 raise RuntimeError(f"Database connection failed: {e}")
 
     def close(self):
-        """Closes the database connection if it is open."""
         if self.connection:
             self.connection.close()
             self.connection = None
 
-    # --- Task 3.4: Loading the Token Cache ---
     def load_token_cache(self):
-        """Loads the full Aether Token Dictionary from PostgreSQL into memory (cache)."""
         token_cache = {}
         cursor = None
         conn = None 
         try:
             conn = self.connect()
             cursor = conn.cursor()
-            
             sql_query = "SELECT english_phrase, hash_code FROM token_dictionary;"
             cursor.execute(sql_query)
-            
             results = cursor.fetchall()
             for phrase, code in results:
                 if phrase and code:
                     token_cache[phrase.strip()] = code.strip()
-            
-            print(f"Token Cache loaded successfully. {len(token_cache)} entries.")
             return token_cache
-
         except Exception as e:
-            print(f"WARNING: Failed to load token cache. Compression disabled. Error: {e}")
+            print(f"WARNING: Failed to load token cache. {e}")
             return {}
-            
         finally:
-            if cursor:
-                cursor.close()
+            if cursor: cursor.close()
             self.close()
 
-    # --- Task 4.3: COMMIT MEMORY (Transactional Write) ---
     def commit_memory(self, previous_hash, raw_memory_text, gemini_client, token_cache):
-        """
-        Orchestrates the transactional memory commit, relying on the previous_hash being pre-fetched.
-        """
         db_connection = None
         cursor = None
-
         try:
-            # 1. TOKENIZATION/ENCODING: COMPRESS THE TEXT
             compressed_memory_text = encode_memory(raw_memory_text, token_cache)
-
-            # 2. SCORE (Cognitive Service Access - using the raw text)
             weighted_score = get_weighted_score(raw_memory_text, gemini_client, token_cache)
-
-            # 3. ESTABLISH WRITE CONNECTION
             db_connection = self.connect()
 
-            # 4. PREPARE & HASH NEW BLOCK
             new_timestamp = datetime.now()
             memory_data_for_hash = {
                 "timestamp": new_timestamp,
@@ -226,143 +181,73 @@ class DBManager:
             }
             current_hash = generate_hash(memory_data_for_hash, previous_hash)
 
-            # 5. EXECUTE TRANSACTIONAL INSERT
             cursor = db_connection.cursor()
             sql_insert = """
             INSERT INTO chronicles (weighted_score, created_at, memory_text, previous_hash, current_hash)
             VALUES (%s, %s, %s, %s, %s);
             """
-            cursor.execute(sql_insert, (
-                weighted_score,
-                new_timestamp,
-                compressed_memory_text,
-                previous_hash, 
-                current_hash
-            ))
-            
+            cursor.execute(sql_insert, (weighted_score, new_timestamp, compressed_memory_text, previous_hash, current_hash))
             db_connection.commit()
 
-            return {
-                "status": "SUCCESS",
-                "score": weighted_score,
-                "new_hash": current_hash
-            }
+            return {"status": "SUCCESS", "score": weighted_score, "new_hash": current_hash}
 
         except Exception as e:
-            if db_connection:
-                db_connection.rollback()
-            print(f"CRITICAL WRITE FAILURE: Transaction rolled back. Error: {e}")
+            if db_connection: db_connection.rollback()
             return {"status": "FAILURE", "error": str(e)}
-
         finally:
-            if cursor:
-                cursor.close()
+            if cursor: cursor.close()
             self.close()
 
-    # --- Task 5.1: Memory Purge Algorithm (Self-Maintenance) ---
     def purge_memory(self, threshold_score=5, age_days=90):
-        """
-        Deletes memories that are below the importance threshold and older than the age limit.
-        """
         db_connection = None
         cursor = None
-        
         try:
             db_connection = self.connect()
             cursor = db_connection.cursor()
-            
-            # CRITICAL FIX: Changed 'timestamp' to 'created_at' to match the database schema
             sql_purge = """
             DELETE FROM chronicles 
             WHERE weighted_score < %s 
             AND created_at < NOW() - INTERVAL '%s days';
             """
-            
             cursor.execute(sql_purge, (threshold_score, age_days))
             deleted_count = cursor.rowcount
-            
             db_connection.commit()
-            print(f"PURGE COMPLETE: Deleted {deleted_count} low-entropy memories.")
-            
-            return {
-                "status": "SUCCESS", 
-                "deleted_count": deleted_count,
-                "parameters": {"threshold": threshold_score, "age": age_days}
-            }
-
+            return {"status": "SUCCESS", "deleted_count": deleted_count}
         except Exception as e:
-            if db_connection:
-                db_connection.rollback()
-            print(f"PURGE FAILED: {e}")
+            if db_connection: db_connection.rollback()
             return {"status": "FAILURE", "error": str(e)}
-            
         finally:
-            if cursor:
-                cursor.close()
+            if cursor: cursor.close()
             self.close()
 
-
-# --- AUTONOMOUS READ UTILITY (Optimization Fix) ---
-
 def retrieve_last_hash(db_manager_instance):
-    """
-    Utility function that safely fetches the last hash, ensuring connection closure.
-    """
     cursor = None
     last_hash = ''
-    
-    # We create a local, dedicated instance of DBManager for this read operation.
     read_db_manager = DBManager() 
-    
     try:
         conn = read_db_manager.connect()
         cursor = conn.cursor()
-        
-        sql_query = """
-        SELECT current_hash 
-        FROM chronicles 
-        ORDER BY id DESC 
-        LIMIT 1;
-        """
+        sql_query = "SELECT current_hash FROM chronicles ORDER BY id DESC LIMIT 1;"
         cursor.execute(sql_query)
         result = cursor.fetchone()
-        
-        if result:
-            last_hash = result[0].strip()
-        
+        if result: last_hash = result[0].strip()
     except Exception as e:
         print(f"Database Autonomous Read Error: {e}")
-        last_hash = ''
-            
     finally:
-        if cursor:
-            cursor.close()
-        read_db_manager.close() # Safely close the temporary connection
-
+        if cursor: cursor.close()
+        read_db_manager.close()
     return last_hash
 
-
-# --- ONE-TIME INITIALIZATION (Cold Start) ---
-
 def ensure_cache_is_loaded():
-    """
-    Attempts to load the token cache if it is currently empty.
-    This function is called inside `main` to ensure the server starts instantly.
-    """
     global TOKEN_DICTIONARY_CACHE
     if not TOKEN_DICTIONARY_CACHE:
         try:
             db_initializer = DBManager()
             TOKEN_DICTIONARY_CACHE = db_initializer.load_token_cache()
-            
-        except ValueError as e:
-            print(f"FATAL CONFIG ERROR: {e}. Cannot load cache.")
         except Exception as e:
-            print(f"FATAL INITIALIZATION ERROR during cache load: {e}. Cache remains empty.")
+            print(f"Cache load warning: {e}")
 
-
-# --- MAIN APPLICATION LOGIC (Replaces the old 'main' handler) ---
-# --- MODIFIED APPLICATION LOGIC ---
+# --- UPDATED MAIN APPLICATION LOGIC ---
 def application_logic(event):
     ensure_cache_is_loaded()
     
@@ -372,35 +257,30 @@ def application_logic(event):
         return {'statusCode': 500, 'body': json.dumps({'status': 'CONFIG ERROR', 'error': str(e)})}
     
     try:
-        # 1. CHECK FOR PURGE (Maintenance)
         if event.get('action') == 'purge':
-            print("Initiating Scheduled Memory Purge...")
             result = db_manager.purge_memory()
             return {'statusCode': 200, 'body': json.dumps(result)}
 
-        # 2. EXTRACT DATA
         new_memory_text = event.get('memory_text')
-        should_persist = event.get('persist', True) # Defaults to TRUE to maintain existing behavior unless specified
+        # Check for ephemeral flag (default to True/Commit if missing)
+        should_persist = event.get('persist', True)
 
         if not new_memory_text:
             return {'statusCode': 200, 'body': json.dumps({'status': 'HEARTBEAT', 'message': 'System Online.'})}
 
-        # 3. EPHEMERAL MODE (The Fix)
-        # If persist is False, we just score it or acknowledge it, but DO NOT touch the DB.
+        # EPHEMERAL MODE: Check score, but do not save.
         if not should_persist:
-             # Optional: You could still get a score if you want to know how SNEGO-P perceives it
-             # without saving it.
              score = get_weighted_score(new_memory_text, GEMINI_CLIENT, TOKEN_DICTIONARY_CACHE)
              return {
                  'statusCode': 200, 
                  'body': json.dumps({
                      'status': 'EPHEMERAL_ACK', 
                      'score': score, 
-                     'message': 'Context received but not committed to Immutable Core.'
+                     'message': 'Context received. Not committed to Immutable Core.'
                  })
              }
 
-        # 4. COMMIT MODE (Standard Operation)
+        # COMMIT MODE
         previous_hash_value = retrieve_last_hash(db_manager)
         result = db_manager.commit_memory(
             previous_hash_value,
@@ -408,37 +288,17 @@ def application_logic(event):
             GEMINI_CLIENT, 
             TOKEN_DICTIONARY_CACHE
         )
-        
         return {'statusCode': 200, 'body': json.dumps(result)}
 
     except Exception as e:
         return {'statusCode': 500, 'body': json.dumps({'status': 'FATAL AETHER CRASH', 'error': str(e)})}
 
-
-# --- FLASK HANDLER (Bridges your logic to Gunicorn) ---
 @app.route('/', methods=['POST'])
 def handle_request():
-    """
-    This function receives the HTTP request and runs your application logic.
-    """
     try:
-        # Get the JSON body from the incoming request
         event = request.get_json(silent=True)
-        if event is None:
-            event = {} # Default to empty dictionary if body is missing or not JSON
-
-        # Run your core application logic
+        if event is None: event = {} 
         response_dict = application_logic(event)
-        
-        # Convert the serverless response dictionary into a proper HTTP response
-        status_code = response_dict.get('statusCode', 500)
-        body = response_dict.get('body', json.dumps({"status": "ERROR", "message": "Unknown internal error"}))
-        
-        # Flask's jsonify/Response helper correctly formats the HTTP response
-        return body, status_code, {'Content-Type': 'application/json'}
-
+        return response_dict.get('body'), response_dict.get('statusCode'), {'Content-Type': 'application/json'}
     except Exception as e:
-        print(f"Flask Routing Error: {e}")
-        return jsonify(
-            {'status': 'FATAL ERROR', 'error': f"Request processing failed: {str(e)}"}
-        ), 500
+        return jsonify({'status': 'FATAL ERROR', 'error': str(e)}), 500
