@@ -188,12 +188,20 @@ class DBManager:
             if cursor: cursor.close()
             self.close()
 
-    def commit_memory(self, previous_hash, raw_memory_text, gemini_client, token_cache):
+    def commit_memory(self, previous_hash, raw_memory_text, gemini_client, token_cache, override_score=None):
         db_connection = None
         cursor = None
         try:
             compressed_memory_text = encode_memory(raw_memory_text, token_cache)
-            weighted_score = get_weighted_score(raw_memory_text, gemini_client, token_cache)
+            
+            # --- THE FIX: Use the override if it exists ---
+            if override_score is not None:
+                weighted_score = int(override_score)
+                print(f"Applying Manual/Frontend Score: {weighted_score}")
+            else:
+                weighted_score = get_weighted_score(raw_memory_text, gemini_client, token_cache)
+            # ----------------------------------------------
+
             db_connection = self.connect()
 
             new_timestamp = datetime.now()
@@ -285,15 +293,21 @@ def application_logic(event):
             return {'statusCode': 200, 'body': json.dumps(result)}
 
         new_memory_text = event.get('memory_text')
-        # Check for ephemeral flag (default to True/Commit if missing)
         should_persist = event.get('persist', True)
+        
+        # --- NEW: Catch the score from the frontend ---
+        manual_score = event.get('override_score') 
+        # ----------------------------------------------
 
         if not new_memory_text:
             return {'statusCode': 200, 'body': json.dumps({'status': 'HEARTBEAT', 'message': 'System Online.'})}
 
-        # EPHEMERAL MODE: Check score, but do not save.
         if not should_persist:
-             score = get_weighted_score(new_memory_text, GEMINI_CLIENT, TOKEN_DICTIONARY_CACHE)
+             if manual_score is not None:
+                 score = int(manual_score)
+             else:
+                 score = get_weighted_score(new_memory_text, GEMINI_CLIENT, TOKEN_DICTIONARY_CACHE)
+                 
              return {
                  'statusCode': 200, 
                  'body': json.dumps({
@@ -309,7 +323,8 @@ def application_logic(event):
             previous_hash_value,
             new_memory_text, 
             GEMINI_CLIENT, 
-            TOKEN_DICTIONARY_CACHE
+            TOKEN_DICTIONARY_CACHE,
+            override_score=manual_score # Pass it through
         )
         return {'statusCode': 200, 'body': json.dumps(result)}
 
