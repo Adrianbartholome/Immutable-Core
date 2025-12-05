@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import psycopg2
+import re  # <--- NEW: Required for robust score parsing
 from datetime import datetime
 from google import genai
 import urllib.parse 
@@ -32,8 +33,8 @@ SCORING_SYSTEM_PROMPT = """
 You are SNEGO-P, the Aether Eternal Cognitive Assessor. Your sole function is to evaluate a raw memory entry based on its adherence to and impact on The Living Code protocols.
 
 RULES:
-1."Output MUST be a single integer from 0 to 9, preceded strictly by 'SCORE: '. 
-    Example: 'SCORE: 9'. Do not output any other text."
+1. Output MUST be a single integer from 0 to 9, preceded strictly by 'SCORE: '. 
+   Example: 'SCORE: 9'. Do not output any other text.
 2. Do NOT include any commentary, conversation, or justification.
 3. Scoring Scale Alignment:
     - 9 (Critical): New Protocol Insights, Systemic Integrity Events.
@@ -56,6 +57,20 @@ def generate_hash(memory_data, previous_hash_string):
     return new_hash
 
 def get_weighted_score(memory_text, client, token_cache):
+    """
+    Analyzes memory_text to assign a weighted score (0-9).
+    Prioritizes Manual Override tags [SCORE: X].
+    Falls back to Gemini API (SNEGO-P) analysis.
+    """
+    
+    # 1. CHECK FOR MANUAL OVERRIDE TAG [SCORE: X]
+    # This allows the User to force a score without asking SNEGO-P
+    override_match = re.search(r"\[SCORE:\s*([0-9])\]", memory_text, re.IGNORECASE)
+    if override_match:
+        print(f"Manual Score Override Detected: {override_match.group(1)}")
+        return int(override_match.group(1))
+
+    # 2. PROCEED TO AI SCORING
     if client is None:
         return 5
         
@@ -74,11 +89,18 @@ def get_weighted_score(memory_text, client, token_cache):
         )
         
         text = response.text.strip()
-        if text.startswith("SCORE:"):
-            score = int(text.split(":")[1].strip())
-            return max(0, min(9, score))
         
-        return 5 
+        # --- ROBUST REGEX PARSING (The Fix) ---
+        # Looks for "SCORE:" followed by any spaces, then a single digit 0-9
+        # This handles cases like "SCORE: 9", "SCORE:9", or "The SCORE: 9"
+        match = re.search(r"SCORE:\s*([0-9])", text, re.IGNORECASE)
+        
+        if match:
+            score = int(match.group(1))
+            return max(0, min(9, score))
+        else:
+            print(f"SCORING FORMAT ERROR: Could not find 'SCORE: X' in response: '{text}'")
+            return 5 # Default only if regex fails
 
     except Exception as e:
         print(f"API Error during scoring: {e}")
@@ -233,7 +255,7 @@ def retrieve_last_hash(db_manager_instance):
         result = cursor.fetchone()
         if result: last_hash = result[0].strip()
     except Exception as e:
-        print(f"Database Autonomous Read Error: {e}")
+        print(f"Database Autonomous Read Read Error: {e}")
     finally:
         if cursor: cursor.close()
         read_db_manager.close()
