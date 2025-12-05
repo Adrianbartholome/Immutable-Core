@@ -74,11 +74,8 @@ def get_weighted_score(memory_text, client, token_cache):
 def encode_memory(raw_text, token_map):
     if not token_map: return raw_text
     compressed_text = raw_text
-    # Sort by length (longest first) to prevent partial replacements
     sorted_tokens = sorted(token_map.items(), key=lambda item: len(item[0]), reverse=True)
     for phrase, hash_code in sorted_tokens:
-        # Regex matches phrase boundaries to avoid replacing parts of words
-        # (Optional: stick to simple replace if regex is too slow, but regex is safer)
         if phrase in compressed_text:
             compressed_text = compressed_text.replace(phrase, hash_code)
     return compressed_text
@@ -135,30 +132,27 @@ class DBManager:
             return {}
         finally:
             if cursor: cursor.close()
+            # OPTIMIZATION: We DO close here because this is a standalone startup event
             self.close()
 
-    # --- NEW: RETRIEVE PROTOCOL ---
     def search_memories(self, query_text, token_cache, limit=5):
         """
-        1. Encodes the search query (so 'Immutable Core' becomes 'IMCO-01').
-        2. Searches the database for matches.
-        3. Decodes the results back to English.
+        Retreives memories. 
+        UPDATED: Now includes 'WHERE is_active = TRUE' to support Soft Deletes.
         """
         cursor = None
         results = []
         try:
-            # 1. Compress the query term so it matches what is in the DB
             compressed_query = encode_memory(query_text, token_cache)
             
             conn = self.connect()
             cursor = conn.cursor()
             
-            # 2. Search (ILIKE for case-insensitive matching)
-            # We prioritize High Score (9) and Recency
+            # UPDATED SQL: Filter by is_active
             sql = """
             SELECT id, weighted_score, memory_text, created_at 
             FROM chronicles 
-            WHERE memory_text ILIKE %s 
+            WHERE is_active = TRUE AND memory_text ILIKE %s 
             ORDER BY weighted_score DESC, created_at DESC 
             LIMIT %s;
             """
@@ -167,7 +161,6 @@ class DBManager:
             
             rows = cursor.fetchall()
             
-            # 3. Decode Results
             for r in rows:
                 r_id, r_score, r_text, r_date = r
                 decoded_text = decode_memory(r_text, token_cache)
@@ -184,7 +177,7 @@ class DBManager:
             return {"status": "FAILURE", "error": str(e)}
         finally:
             if cursor: cursor.close()
-            self.close()
+            # OPTIMIZATION: Do NOT close connection here; let the main logic handle it.
 
     def commit_memory(self, previous_hash, raw_memory_text, gemini_client, token_cache, override_score=None):
         cursor = None
@@ -199,7 +192,7 @@ class DBManager:
             conn = self.connect()
             new_timestamp = datetime.now()
             
-            # Hash generation uses the COMPRESSED text for integrity
+            # Hash calculation (Ignores is_active, so chain integrity is preserved during soft deletes)
             memory_data_for_hash = {
                 "timestamp": new_timestamp,
                 "weighted_score": weighted_score,
@@ -208,6 +201,7 @@ class DBManager:
             current_hash = generate_hash(memory_data_for_hash, previous_hash)
 
             cursor = conn.cursor()
+            # We rely on the DEFAULT TRUE for is_active, so no need to specify it here
             sql_insert = """
             INSERT INTO chronicles (weighted_score, created_at, memory_text, previous_hash, current_hash)
             VALUES (%s, %s, %s, %s, %s);
@@ -222,9 +216,11 @@ class DBManager:
             return {"status": "FAILURE", "error": str(e)}
         finally:
             if cursor: cursor.close()
-            self.close()
+            # OPTIMIZATION: Do NOT close connection here; let the main logic handle it.
 
     def purge_memory(self, threshold_score=5, age_days=90):
+        # NOTE: This is the old hard-delete logic. 
+        # Future TODO: Update this to use UPDATE chronicles SET is_active = FALSE...
         cursor = None
         try:
             conn = self.connect()
@@ -238,16 +234,14 @@ class DBManager:
             return {"status": "FAILURE", "error": str(e)}
         finally:
             if cursor: cursor.close()
-            self.close()
+            # OPTIMIZATION: Do NOT close here.
 
 def retrieve_last_hash(db_manager):
-    # Separate function to keep logic clean, creates own temp connection usually or reuses logic
-    # Simplified here to just open/close safely
-    temp_db = DBManager()
+    # OPTIMIZATION: Reuse the passed db_manager instance instead of creating a new one
     cursor = None
     last_hash = ''
     try:
-        conn = temp_db.connect()
+        conn = db_manager.connect() # Uses existing connection
         cursor = conn.cursor()
         cursor.execute("SELECT current_hash FROM chronicles ORDER BY id DESC LIMIT 1;")
         result = cursor.fetchone()
@@ -256,7 +250,7 @@ def retrieve_last_hash(db_manager):
         print(f"Hash Read Error: {e}")
     finally:
         if cursor: cursor.close()
-        temp_db.close()
+        # OPTIMIZATION: Do NOT close the db_manager here
     return last_hash
 
 def ensure_cache_is_loaded():
@@ -273,8 +267,11 @@ def ensure_cache_is_loaded():
 def application_logic(event):
     ensure_cache_is_loaded()
     
+    db_manager = None 
     try:
+        # 1. Open Connection ONCE
         db_manager = DBManager()
+        db_manager.connect() 
     except ValueError as e:
         return {'statusCode': 500, 'body': json.dumps({'status': 'CONFIG ERROR', 'error': str(e)})}
     
@@ -307,12 +304,19 @@ def application_logic(event):
              score = int(manual_score) if manual_score is not None else get_weighted_score(new_memory_text, GEMINI_CLIENT, TOKEN_DICTIONARY_CACHE)
              return {'statusCode': 200, 'body': json.dumps({'status': 'EPHEMERAL_ACK', 'score': score})}
 
+        # REUSE: Pass the existing db_manager to reuse the connection
         previous_hash = retrieve_last_hash(db_manager)
+        
         result = db_manager.commit_memory(previous_hash, new_memory_text, GEMINI_CLIENT, TOKEN_DICTIONARY_CACHE, manual_score)
         return {'statusCode': 200, 'body': json.dumps(result)}
 
     except Exception as e:
         return {'statusCode': 500, 'body': json.dumps({'status': 'FATAL ERROR', 'error': str(e)})}
+        
+    finally:
+        # 2. Close Connection ONCE at the end
+        if db_manager:
+            db_manager.close()
 
 @app.route('/', methods=['POST'])
 def handle_request():
