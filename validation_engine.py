@@ -304,22 +304,45 @@ def application_logic(event):
             
         litho_res = db_manager.commit_lithograph(prev_hash, content_to_save, GEMINI_CLIENT, TOKEN_DICTIONARY_CACHE, event.get('override_score'))
 
-        # Holographic Refraction (Async)
+        # 3. Holographic Refraction (Now with "Hardener" Logic)
         try:
             refraction = GEMINI_CLIENT.models.generate_content(
                 model='gemini-2.5-flash',
                 contents=[REFRACTOR_SYSTEM_PROMPT + f"Refract this: {content_to_save}"],
                 config={"temperature": 0.1, "response_mime_type": "application/json"}
             )
-            packet = json.loads(refraction.text)
             
+            # --- HARDENER: CLEAN THE JSON ---
+            raw_json = refraction.text.strip()
+            # Remove markdown code blocks if present
+            if raw_json.startswith("```"):
+                raw_json = raw_json.split("\n", 1)[-1].rsplit("\n", 1)[0]
+            if raw_json.startswith("json"):
+                raw_json = raw_json[4:].strip()
+                
+            packet = json.loads(raw_json)
+            
+            # --- SAFETY: ENSURE REQUIRED KEYS ---
+            # If AI missed the 'logos' key, use the original text to prevent DB crash
+            if not packet.get('logos'):
+                packet['logos'] = content_to_save
+            # Ensure 'pathos' is valid JSON
+            if not isinstance(packet.get('pathos'), dict):
+                packet['pathos'] = {"status": "Neutral", "error": "Parsing_Fail"}
+
+            # --- COMMIT ---
             holo_manager = HolographicManager(db_manager)
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             loop.run_until_complete(holo_manager.commit_hologram(packet, litho_res.get('litho_id')))
             loop.close()
+            
+            print(f"Hologram Commit SUCCESS. ID: {packet.get('logos')[:20]}...")
+
         except Exception as e:
-            print(f"Hologram Error: {e}")
+            # This prints the actual error to your DigitalOcean logs
+            print(f"FATAL HOLOGRAM ERROR: {e}") 
+            print(f"FAILED JSON: {refraction.text if 'refraction' in locals() else 'No Response'}")
 
         return {'statusCode': 200, 'body': json.dumps(litho_res)}
 
