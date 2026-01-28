@@ -164,6 +164,11 @@ async def handle_request(event: EventModel, background_tasks: BackgroundTasks):
     
     return {"status": "SUCCESS", "litho_id": litho_id, "hologram_status": "QUEUED"}
 
+# Place this near your other routes
+@app.get("/")
+def root_health_check():
+    return {"status": "TITAN ONLINE", "version": "GLASS_HOUSE_V2"}
+
 @app.get("/health")
 def health():
     return {"status": "ONLINE"}
