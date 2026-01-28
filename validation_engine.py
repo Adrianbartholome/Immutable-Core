@@ -10,6 +10,7 @@ from datetime import datetime
 from google import genai
 from flask import Flask, request, jsonify 
 from flask_cors import CORS
+import traceback # Added for detailed error logging
 
 # --- FLASK APP INSTANCE ---
 app = Flask(__name__)
@@ -173,7 +174,7 @@ class DBManager:
             print(f"Search Error: {e}")
             return []
 
-# --- HOLOGRAPHIC MANAGER (ASYNC RESTORED) ---
+# --- HOLOGRAPHIC MANAGER (ASYNC BRIDGE) ---
 
 class HolographicManager:
     # We do NOT pass db_manager here anymore to avoid shared connection issues in async threads
@@ -184,19 +185,19 @@ class HolographicManager:
         hid = str(uuid.uuid4())
         
         # Create a FRESH connection for this async context
-        # This is crucial for async stability
         local_db = DBManager()
-        conn = local_db.connect()
         
-        # --- STABILIZER: DEFINE DEFAULTS ---
-        catalyst = packet.get('catalyst') or "Implicit System Trigger"
-        mythos = packet.get('mythos') or "The Observer"
-        pathos = json.dumps(packet.get('pathos') or {"status": "Neutral"})
-        ethos = packet.get('ethos') or "Preservation of Signal"
-        synthesis = packet.get('synthesis') or "Data Anchored"
-        logos = packet.get('logos') or "Raw Data Artifact"
-
         try:
+            conn = local_db.connect()
+            
+            # --- STABILIZER: DEFINE DEFAULTS ---
+            catalyst = packet.get('catalyst') or "Implicit System Trigger"
+            mythos = packet.get('mythos') or "The Observer"
+            pathos = json.dumps(packet.get('pathos') or {"status": "Neutral"})
+            ethos = packet.get('ethos') or "Preservation of Signal"
+            synthesis = packet.get('synthesis') or "Data Anchored"
+            logos = packet.get('logos') or "Raw Data Artifact"
+
             with conn.cursor() as cur:
                 cur.execute("INSERT INTO node_foundation (hologram_id, catalyst) VALUES (%s, %s)", (hid, catalyst))
                 cur.execute("INSERT INTO node_essence (hologram_id, pathos, mythos) VALUES (%s, %s, %s)", (hid, pathos, mythos))
@@ -206,9 +207,11 @@ class HolographicManager:
             print(f"TITAN LOG: Hologram {hid} committed successfully (ASYNC).")
             return {"status": "SUCCESS", "hologram_id": hid}
         except Exception as e:
-            conn.rollback()
-            print(f"TITAN ERROR (Hologram Reject): {e}") 
-            return {"status": "FAILURE", "error": str(e)}
+            if local_db.connection: local_db.connection.rollback()
+            # Capture full traceback
+            error_details = traceback.format_exc()
+            print(f"TITAN ERROR (Hologram Reject): {error_details}") 
+            return {"status": "FAILURE", "error": str(e), "details": error_details}
         finally:
             local_db.close()
 
@@ -267,8 +270,9 @@ def application_logic(event):
         litho_res = db_manager.commit_lithograph(prev_hash, content_to_save, GEMINI_CLIENT, TOKEN_DICTIONARY_CACHE, event.get('override_score'))
 
         # 3. Holographic Refraction (ASYNC Bridge)
+        holo_error = None
         try:
-            # 3a. Generate Refraction (Synchronous Call to Gemini - we need the data first)
+            # 3a. Generate Refraction
             refraction = GEMINI_CLIENT.models.generate_content(
                 model='gemini-2.5-flash',
                 contents=[REFRACTOR_SYSTEM_PROMPT + f"\n\nINPUT DATA TO REFRACT:\n{content_to_save}"],
@@ -283,21 +287,35 @@ def application_logic(event):
 
             packet = json.loads(raw_text)
             
-            # 3b. Async Database Write (The Bridge)
-            # We spin up a fresh event loop just for this operation
-            holo_manager = HolographicManager() # No DB passed, it creates its own
+            # 3b. Async Database Write (Blocking execution for safety)
+            holo_manager = HolographicManager()
             
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
-                loop.run_until_complete(holo_manager.commit_hologram(packet, litho_res.get('litho_id')))
+                # We capture the result from the async function
+                holo_result = loop.run_until_complete(holo_manager.commit_hologram(packet, litho_res.get('litho_id')))
+                
+                # If the internal async function reported failure, capture it
+                if holo_result.get('status') == 'FAILURE':
+                    holo_error = holo_result.get('error')
             finally:
                 loop.close()
             
         except Exception as e:
             print(f"PRISM FRACTURE (Refraction Failed): {e}")
+            holo_error = str(e)
 
-        return {'statusCode': 200, 'body': json.dumps(litho_res)}
+        # FINAL RESPONSE CONSTRUCTION
+        # We attach any Holographic error to the final response so the Frontend knows.
+        response_body = litho_res
+        if holo_error:
+            response_body['hologram_status'] = "FAILURE"
+            response_body['hologram_error'] = holo_error
+        else:
+            response_body['hologram_status'] = "SUCCESS"
+
+        return {'statusCode': 200, 'body': json.dumps(response_body)}
 
     except Exception as e:
         return {'statusCode': 500, 'body': json.dumps({'status': 'FATAL ERROR', 'error': str(e)})}
