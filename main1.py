@@ -6,12 +6,13 @@ import re
 import uuid
 import urllib.parse
 import traceback
+import sys
 from datetime import datetime
 from google import genai
-from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
+from fastapi import FastAPI, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional, Dict, Any
+from typing import Optional
 
 # --- APP INITIALIZATION ---
 app = FastAPI(title="Aether Titan Core")
@@ -23,6 +24,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# --- LOGGING UTILS ---
+def log(message):
+    print(f"[TITAN-LOG] {message}", file=sys.stdout, flush=True)
+
+def log_error(message):
+    print(f"[TITAN-ERROR] {message}", file=sys.stderr, flush=True)
 
 # --- GLOBAL VARIABLES & PROMPTS ---
 TOKEN_DICTIONARY_CACHE = {}
@@ -52,45 +60,21 @@ Return ONLY a JSON object with these exact keys:
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 if not GEMINI_API_KEY:
-    print("FATAL CONFIG ERROR: GEMINI_API_KEY not found.")
+    log_error("FATAL: GEMINI_API_KEY not found.")
 else:
     try:
         GEMINI_CLIENT = genai.Client(api_key=GEMINI_API_KEY)
+        log("Gemini Client Initialized.")
     except Exception as e:
-        print(f"FATAL INITIALIZATION ERROR: {e}")
+        log_error(f"FATAL: Gemini Init Failed: {e}")
 
 # --- UTILITIES ---
-
 def generate_hash(memory_data, previous_hash_string):
     if isinstance(memory_data.get("timestamp"), datetime):
         memory_data["timestamp"] = memory_data["timestamp"].isoformat()
     data_block_string = json.dumps(memory_data, sort_keys=True)
     raw_content = previous_hash_string + data_block_string
     return hashlib.sha256(raw_content.encode('utf-8')).hexdigest()
-
-def get_weighted_score(memory_text, client, token_cache):
-    override_match = re.search(r"\[SCORE:\s*([0-9])\]", memory_text, re.IGNORECASE)
-    if override_match: return int(override_match.group(1))
-    if client is None: return 5
-    try:
-        decoded_text = decode_memory(memory_text, token_cache) if token_cache else memory_text
-        response = client.models.generate_content(
-            model='gemini-2.5-flash', 
-            contents=[SCORING_SYSTEM_PROMPT + decoded_text],
-            config={"temperature": 0.0} 
-        )
-        match = re.search(r"SCORE:\s*([0-9])", response.text.strip(), re.IGNORECASE)
-        return int(match.group(1)) if match else 5
-    except: return 5
-
-def encode_memory(raw_text, token_map):
-    if not token_map: return raw_text
-    compressed_text = raw_text
-    sorted_tokens = sorted(token_map.items(), key=lambda item: len(item[0]), reverse=True)
-    for phrase, hash_code in sorted_tokens:
-        if phrase in compressed_text:
-            compressed_text = compressed_text.replace(phrase, hash_code)
-    return compressed_text
 
 def decode_memory(compressed_text, token_map):
     if not token_map: return compressed_text
@@ -102,8 +86,16 @@ def decode_memory(compressed_text, token_map):
             decompressed_text = decompressed_text.replace(hash_code, decode_map[hash_code])
     return decompressed_text
 
-# --- DATABASE MANAGERS (Synchronous, but handled via ThreadPool in FastAPI) ---
+def encode_memory(raw_text, token_map):
+    if not token_map: return raw_text
+    compressed_text = raw_text
+    sorted_tokens = sorted(token_map.items(), key=lambda item: len(item[0]), reverse=True)
+    for phrase, hash_code in sorted_tokens:
+        if phrase in compressed_text:
+            compressed_text = compressed_text.replace(phrase, hash_code)
+    return compressed_text
 
+# --- DATABASE MANAGER (SYNCHRONOUS) ---
 def get_db_connection_string():
     password = urllib.parse.quote_plus(os.environ.get("DB_PASSWORD", ""))
     return f"postgresql://{os.environ.get('DB_USER')}:{password}@{os.environ.get('DB_HOST')}:{os.environ.get('DB_PORT', '6543')}/{os.environ.get('DB_NAME')}?sslmode=require"
@@ -125,7 +117,7 @@ class DBManager:
                 for p, c in cur.fetchall(): token_cache[p.strip()] = c.strip()
             return token_cache
         except Exception as e:
-            print(f"Cache Error: {e}")
+            log_error(f"Cache Load Error: {e}")
             return {}
         finally: 
             if conn: conn.close()
@@ -134,7 +126,11 @@ class DBManager:
         conn = None
         try:
             compressed = encode_memory(raw_text, token_cache)
-            score = int(manual_score) if manual_score is not None else get_weighted_score(raw_text, client, token_cache)
+            # Simple scoring default 5 if client fails
+            score = 5
+            if manual_score: 
+                score = int(manual_score)
+            
             conn = self.connect()
             now = datetime.now()
             current_hash = generate_hash({"timestamp": now, "weighted_score": score, "memory_text": compressed}, previous_hash)
@@ -144,9 +140,11 @@ class DBManager:
                             (score, now, compressed, previous_hash, current_hash))
                 new_id = cur.fetchone()[0]
             conn.commit()
+            log(f"Lithograph Committed. ID: {new_id}")
             return {"status": "SUCCESS", "score": score, "new_hash": current_hash, "litho_id": new_id}
         except Exception as e:
             if conn: conn.rollback()
+            log_error(f"Litho Commit Failed: {e}")
             return {"status": "FAILURE", "error": str(e)}
         finally:
             if conn: conn.close()
@@ -175,11 +173,12 @@ class DBManager:
                 })
             return results
         except Exception as e:
-            print(f"Search Error: {e}")
+            log_error(f"Search Error: {e}")
             return []
         finally:
             if conn: conn.close()
 
+# --- HOLOGRAPHIC MANAGER ---
 class HolographicManager:
     def __init__(self):
         self.db = DBManager()
@@ -203,26 +202,24 @@ class HolographicManager:
                 cur.execute("INSERT INTO node_data (hologram_id, logos) VALUES (%s::uuid, %s)", (hid, logos))
                 
             conn.commit()
-            print(f"TITAN LOG: Hologram {hid} committed successfully (BACKGROUND).", flush=True)
+            log(f"Hologram {hid} committed successfully.")
             return {"status": "SUCCESS", "hologram_id": hid}
 
         except Exception as e:
             if conn: conn.rollback()
-            error_details = traceback.format_exc()
-            print(f"TITAN ERROR (Hologram Reject): {error_details}", flush=True) 
+            log_error(f"Hologram Reject: {traceback.format_exc()}")
             return {"status": "FAILURE", "error": str(e)}
         finally:
             if conn: conn.close()
 
-# --- BACKGROUND WORKER (The Limbic Recorder) ---
-
+# --- BACKGROUND WORKER (The Recorder) ---
 def background_hologram_process(content_to_save: str, litho_id: int):
-    """
-    This function is pushed to the background. 
-    It runs AFTER the response is sent to the user.
-    """
-    print("TITAN LOG: Starting Background Refraction...", flush=True)
+    log(f"Starting Background Refraction for Litho ID: {litho_id}")
     try:
+        if not GEMINI_CLIENT:
+            log_error("Gemini Client missing in background.")
+            return
+
         # 1. Refract (Gemini)
         refraction = GEMINI_CLIENT.models.generate_content(
             model='gemini-2.5-flash',
@@ -243,10 +240,9 @@ def background_hologram_process(content_to_save: str, litho_id: int):
         holo_manager.commit_hologram(packet, litho_id)
         
     except Exception as e:
-        print(f"BACKGROUND PROCESS FAILED: {e}", flush=True)
+        log_error(f"BACKGROUND CRASH: {traceback.format_exc()}")
 
 # --- API ROUTES ---
-
 class EventModel(BaseModel):
     action: Optional[str] = None
     query: Optional[str] = None
@@ -275,7 +271,9 @@ async def handle_request(event: EventModel, background_tasks: BackgroundTasks):
         # 2. COMMIT
         if not event.memory_text: return {"status": "HEARTBEAT"}
 
-        # Summarization (Sync - fast enough usually, or could move to BG too)
+        log(f"Processing Commit: {event.commit_type}")
+
+        # Summarization (Sync - usually fast enough)
         content_to_save = event.memory_text
         if event.commit_type == 'summary':
             try:
@@ -286,7 +284,7 @@ async def handle_request(event: EventModel, background_tasks: BackgroundTasks):
                 content_to_save = summary_res.text
             except: pass 
 
-        # Lithographic Commit (Synchronous - The Bedrock must be immediate)
+        # Lithographic Commit (Synchronous - Bedrock)
         prev_hash = ''
         try:
             conn = db_manager.connect()
@@ -300,17 +298,16 @@ async def handle_request(event: EventModel, background_tasks: BackgroundTasks):
         litho_res = db_manager.commit_lithograph(prev_hash, content_to_save, GEMINI_CLIENT, TOKEN_DICTIONARY_CACHE, event.override_score)
 
         # 3. HOLOGRAPHIC REFRACTION (BACKGROUND TASK)
-        # This is the magic. We queue the task, and return immediately.
-        # DigitalOcean sees the response, but FastAPI keeps the worker alive.
+        # The user gets the response instantly. The "Soul" processes in the background.
         background_tasks.add_task(background_hologram_process, content_to_save, litho_res.get('litho_id'))
         
         litho_res['hologram_status'] = "QUEUED_IN_BACKGROUND"
         return litho_res
 
     except Exception as e:
+        log_error(f"FATAL REQUEST ERROR: {e}")
         return {"status": "FATAL ERROR", "error": str(e)}
 
-# --- HEALTH CHECK FOR DIGITALOCEAN ---
 @app.get("/health")
-def health_check():
-    return {"status": "TITAN ONLINE"}
+def health():
+    return {"status": "ONLINE"}
