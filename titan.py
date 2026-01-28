@@ -263,7 +263,7 @@ def health():
     return {"status": "ONLINE"}
 
 @app.post("/")
-async def handle_request(event: EventModel, background_tasks: BackgroundTasks):
+def handle_request(event: EventModel, background_tasks: BackgroundTasks):
     global TOKEN_DICTIONARY_CACHE
     db_manager = DBManager()
     
