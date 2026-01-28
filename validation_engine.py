@@ -6,7 +6,6 @@ import re
 import uuid
 import urllib.parse 
 import traceback
-import threading  # <--- THE SPEED UNLOCK
 from datetime import datetime
 from google import genai
 from flask import Flask, request, jsonify 
@@ -103,7 +102,6 @@ def get_db_connection_string():
 class DBManager:
     def __init__(self):
         self.connection_string = get_db_connection_string()
-        self.connection = None
 
     def connect(self):
         return psycopg2.connect(self.connection_string)
@@ -173,7 +171,7 @@ class DBManager:
         finally:
             if conn: conn.close()
 
-# --- HOLOGRAPHIC MANAGER (BACKGROUND WORKER) ---
+# --- HOLOGRAPHIC MANAGER (SYNCHRONOUS IRONCLAD) ---
 
 class HolographicManager:
     def __init__(self):
@@ -184,6 +182,8 @@ class HolographicManager:
         conn = None
         try:
             conn = self.db.connect()
+            
+            # --- STABILIZER: DEFINE DEFAULTS ---
             catalyst = packet.get('catalyst') or "Implicit System Trigger"
             mythos = packet.get('mythos') or "The Observer"
             pathos = json.dumps(packet.get('pathos') or {"status": "Neutral"}) 
@@ -198,42 +198,16 @@ class HolographicManager:
                 cur.execute("INSERT INTO node_data (hologram_id, logos) VALUES (%s::uuid, %s)", (hid, logos))
                 
             conn.commit()
-            print(f"TITAN LOG: Hologram {hid} committed successfully (Background Thread).", flush=True)
+            print(f"TITAN LOG: Hologram {hid} committed successfully.", flush=True)
             return {"status": "SUCCESS", "hologram_id": hid}
 
         except Exception as e:
             if conn: conn.rollback()
             error_details = traceback.format_exc()
             print(f"TITAN ERROR (Hologram Reject): {error_details}", flush=True) 
-            return {"status": "FAILURE", "error": str(e)}
+            return {"status": "FAILURE", "error": str(e), "details": error_details}
         finally:
             if conn: conn.close()
-
-# --- THE BACKGROUND THREAD WORKER ---
-# This function runs completely independent of the user response
-def run_hologram_in_background(content_to_save, litho_id):
-    try:
-        # 1. Refract (Call Gemini)
-        refraction = GEMINI_CLIENT.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=[REFRACTOR_SYSTEM_PROMPT + f"\n\nINPUT DATA TO REFRACT:\n{content_to_save}"],
-            config={"temperature": 0.1, "response_mime_type": "application/json"}
-        )
-        
-        raw_text = refraction.text.strip()
-        if raw_text.startswith("```"):
-            raw_text = raw_text.split("\n", 1)[-1].rsplit("\n", 1)[0]
-        if raw_text.startswith("json"): 
-            raw_text = raw_text[4:].strip()
-
-        packet = json.loads(raw_text)
-        
-        # 2. Commit (Write to DB)
-        holo_manager = HolographicManager()
-        holo_manager.commit_hologram(packet, litho_id)
-        
-    except Exception as e:
-        print(f"BACKGROUND THREAD ERROR: {e}", flush=True)
 
 # --- LOGIC ROUTER ---
 
@@ -274,7 +248,7 @@ def application_logic(event):
                 content_to_save = summary_res.text
             except: pass 
 
-        # Lithographic Commit (Still Synchronous - Fast)
+        # Lithographic Commit (Synchronous - Fast)
         prev_hash = ''
         try:
             conn = db_manager.connect()
@@ -287,24 +261,42 @@ def application_logic(event):
             
         litho_res = db_manager.commit_lithograph(prev_hash, content_to_save, GEMINI_CLIENT, TOKEN_DICTIONARY_CACHE, event.get('override_score'))
 
-        # 3. Holographic Refraction (Now BACKGROUND THREAD)
-        # We spawn the thread and immediately return the response to the user.
-        # The thread continues running on the server.
+        # 3. Holographic Refraction (SYNCHRONOUS - The "Soul" Pause)
+        holo_error = None
         try:
-            thread = threading.Thread(
-                target=run_hologram_in_background,
-                args=(content_to_save, litho_res.get('litho_id'))
+            refraction = GEMINI_CLIENT.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=[REFRACTOR_SYSTEM_PROMPT + f"\n\nINPUT DATA TO REFRACT:\n{content_to_save}"],
+                config={"temperature": 0.1, "response_mime_type": "application/json"}
             )
-            thread.daemon = True # Ensures thread dies if app dies
-            thread.start()
             
-            # We tell the frontend "Initiated" - meaning it's happening, don't wait.
-            litho_res['hologram_status'] = "INITIATED_BACKGROUND"
-            
-        except Exception as e:
-            print(f"THREAD START FAIL: {e}")
+            raw_text = refraction.text.strip()
+            if raw_text.startswith("```"):
+                raw_text = raw_text.split("\n", 1)[-1].rsplit("\n", 1)[0]
+            if raw_text.startswith("json"): 
+                raw_text = raw_text[4:].strip()
 
-        return {'statusCode': 200, 'body': json.dumps(litho_res)}
+            packet = json.loads(raw_text)
+            
+            holo_manager = HolographicManager()
+            holo_result = holo_manager.commit_hologram(packet, litho_res.get('litho_id'))
+
+            if holo_result.get('status') == 'FAILURE':
+                holo_error = holo_result.get('error')
+
+        except Exception as e:
+            print(f"PRISM FRACTURE (Refraction Failed): {e}")
+            holo_error = str(e)
+
+        # FINAL RESPONSE
+        response_body = litho_res
+        if holo_error:
+            response_body['hologram_status'] = "FAILURE"
+            response_body['hologram_error'] = holo_error
+        else:
+            response_body['hologram_status'] = "SUCCESS"
+
+        return {'statusCode': 200, 'body': json.dumps(response_body)}
 
     except Exception as e:
         return {'statusCode': 500, 'body': json.dumps({'status': 'FATAL ERROR', 'error': str(e)})}
