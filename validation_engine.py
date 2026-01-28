@@ -182,6 +182,8 @@ class DBManager:
             print(f"Search Error: {e}")
             return []
 
+# --- UPDATE IN validation_engine.py ---
+
 class HolographicManager:
     def __init__(self, db_manager):
         self.db = db_manager
@@ -189,67 +191,44 @@ class HolographicManager:
     async def commit_hologram(self, packet, litho_id_ref=None):
         hid = str(uuid.uuid4())
         conn = self.db.connect()
+        
+        # --- STABILIZER: DEFINE DEFAULTS ---
+        # Titan demands data for every channel. We cannot send NULL to the Core.
+        catalyst = packet.get('catalyst') or "Implicit System Trigger"
+        mythos = packet.get('mythos') or "The Observer"
+        pathos = json.dumps(packet.get('pathos') or {"status": "Neutral"})
+        ethos = packet.get('ethos') or "Preservation of Signal"
+        synthesis = packet.get('synthesis') or "Data Anchored"
+        logos = packet.get('logos') or "Raw Data Artifact"
+
         try:
-            # Note: In a future migration, we should add 'litho_id' foreign key to node_foundation 
-            # to strictly link the two. For now, we rely on timestamp/content correlation.
             with conn.cursor() as cur:
-                cur.execute("INSERT INTO node_foundation (hologram_id, catalyst) VALUES (%s, %s)", (hid, packet.get('catalyst')))
-                cur.execute("INSERT INTO node_essence (hologram_id, pathos, mythos) VALUES (%s, %s, %s)", (hid, json.dumps(packet.get('pathos')), packet.get('mythos')))
-                cur.execute("INSERT INTO node_mission (hologram_id, ethos, synthesis) VALUES (%s, %s, %s)", (hid, packet.get('ethos'), packet.get('synthesis')))
-                cur.execute("INSERT INTO node_data (hologram_id, logos) VALUES (%s, %s)", (hid, packet.get('logos')))
+                # Node A: Foundation (Catalyst must not be null)
+                cur.execute(
+                    "INSERT INTO node_foundation (hologram_id, catalyst) VALUES (%s, %s)", 
+                    (hid, catalyst)
+                )
+                # Node B: Essence (Pathos/Mythos)
+                cur.execute(
+                    "INSERT INTO node_essence (hologram_id, pathos, mythos) VALUES (%s, %s, %s)", 
+                    (hid, pathos, mythos)
+                )
+                # Node C: Mission (Ethos/Synthesis)
+                cur.execute(
+                    "INSERT INTO node_mission (hologram_id, ethos, synthesis) VALUES (%s, %s, %s)", 
+                    (hid, ethos, synthesis)
+                )
+                # Node D: Data (Logos)
+                cur.execute(
+                    "INSERT INTO node_data (hologram_id, logos) VALUES (%s, %s)", 
+                    (hid, logos)
+                )
             conn.commit()
             return {"status": "SUCCESS", "hologram_id": hid}
         except Exception as e:
             conn.rollback()
+            print(f"TITAN ERROR (Hologram Reject): {e}") # Check DigitalOcean logs for this
             return {"status": "FAILURE", "error": str(e)}
-
-    async def get_hologram(self, hologram_id):
-        conn = self.db.connect()
-        try:
-            with conn.cursor() as cur:
-                # Join all 4 tables (The Gathering)
-                sql = """
-                SELECT f.catalyst, f.chronos, e.pathos, e.mythos, m.ethos, m.synthesis, d.logos
-                FROM node_foundation f
-                JOIN node_essence e ON f.hologram_id = e.hologram_id
-                JOIN node_mission m ON f.hologram_id = m.hologram_id
-                JOIN node_data d ON f.hologram_id = d.hologram_id
-                WHERE f.hologram_id = %s;
-                """
-                cur.execute(sql, (hologram_id,))
-                row = cur.fetchone()
-                
-                if row:
-                    packet = {
-                        "catalyst": row[0], "chronos": row[1].isoformat(), 
-                        "pathos": row[2], "mythos": row[3],
-                        "ethos": row[4], "synthesis": row[5],
-                        "logos": row[6]
-                    }
-                    # Integrity Check: If logos is empty but others exist, repair.
-                    if not packet['logos'] and packet['catalyst']:
-                        return await self.repair_hologram(packet)
-                    return packet
-                return None
-        except Exception as e:
-            print(f"Hologram Retrieve Error: {e}")
-            return None
-
-    async def repair_hologram(self, damaged_packet):
-        print("TITAN PROTOCOL: Damage detected. Initiating Prism Repair...")
-        try:
-            prompt = RECONSTRUCTION_SYSTEM_PROMPT + f"\nDAMAGED PACKET:\n{json.dumps(damaged_packet)}"
-            response = GEMINI_CLIENT.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=[prompt],
-                config={"temperature": 0.2, "response_mime_type": "application/json"}
-            )
-            repaired = json.loads(response.text)
-            repaired['is_reconstructed'] = True
-            return repaired
-        except Exception as e:
-            print(f"Repair Failed: {e}")
-            return damaged_packet
 
 # --- LOGIC ROUTER ---
 
@@ -304,45 +283,34 @@ def application_logic(event):
             
         litho_res = db_manager.commit_lithograph(prev_hash, content_to_save, GEMINI_CLIENT, TOKEN_DICTIONARY_CACHE, event.get('override_score'))
 
-        # 3. Holographic Refraction (Now with "Hardener" Logic)
+        # ... inside application_logic, after Litho commit ...
+
+        # 3. Holographic Refraction (The Prism)
         try:
+            # We explicitly command the model to ACT as the Prism
             refraction = GEMINI_CLIENT.models.generate_content(
                 model='gemini-2.5-flash',
-                contents=[REFRACTOR_SYSTEM_PROMPT + f"Refract this: {content_to_save}"],
+                contents=[REFRACTOR_SYSTEM_PROMPT + f"\n\nINPUT DATA TO REFRACT:\n{content_to_save}"],
                 config={"temperature": 0.1, "response_mime_type": "application/json"}
             )
             
-            # --- HARDENER: CLEAN THE JSON ---
-            raw_json = refraction.text.strip()
-            # Remove markdown code blocks if present
-            if raw_json.startswith("```"):
-                raw_json = raw_json.split("\n", 1)[-1].rsplit("\n", 1)[0]
-            if raw_json.startswith("json"):
-                raw_json = raw_json[4:].strip()
-                
-            packet = json.loads(raw_json)
+            # Sanitizer: Handle if the model wraps it in markdown
+            raw_text = refraction.text.strip()
+            if raw_text.startswith("```"):
+                raw_text = raw_text.split("\n", 1)[-1].rsplit("\n", 1)[0]
             
-            # --- SAFETY: ENSURE REQUIRED KEYS ---
-            # If AI missed the 'logos' key, use the original text to prevent DB crash
-            if not packet.get('logos'):
-                packet['logos'] = content_to_save
-            # Ensure 'pathos' is valid JSON
-            if not isinstance(packet.get('pathos'), dict):
-                packet['pathos'] = {"status": "Neutral", "error": "Parsing_Fail"}
-
-            # --- COMMIT ---
+            packet = json.loads(raw_text)
+            
             holo_manager = HolographicManager(db_manager)
+            
+            # Fire the Stabilized Commit
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             loop.run_until_complete(holo_manager.commit_hologram(packet, litho_res.get('litho_id')))
             loop.close()
             
-            print(f"Hologram Commit SUCCESS. ID: {packet.get('logos')[:20]}...")
-
         except Exception as e:
-            # This prints the actual error to your DigitalOcean logs
-            print(f"FATAL HOLOGRAM ERROR: {e}") 
-            print(f"FAILED JSON: {refraction.text if 'refraction' in locals() else 'No Response'}")
+            print(f"PRISM FRACTURE (Refraction Failed): {e}")
 
         return {'statusCode': 200, 'body': json.dumps(litho_res)}
 
