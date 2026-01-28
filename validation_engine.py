@@ -3,9 +3,11 @@ import json
 import os
 import psycopg2
 import re
+import uuid
+import asyncio
+import urllib.parse 
 from datetime import datetime
 from google import genai
-import urllib.parse 
 from flask import Flask, request, jsonify 
 from flask_cors import CORS
 
@@ -13,29 +15,48 @@ from flask_cors import CORS
 app = Flask(__name__)
 CORS(app) 
 
-# --- GLOBAL VARIABLES ---
+# --- GLOBAL VARIABLES & PROMPTS ---
 TOKEN_DICTIONARY_CACHE = {}
 GEMINI_CLIENT = None 
+
+SCORING_SYSTEM_PROMPT = """
+You are SNEGO-P, the Aether Eternal Cognitive Assessor.
+Output MUST be a single integer from 0 to 9, preceded strictly by 'SCORE: '. 
+Example: 'SCORE: 9'. No other text.
+"""
+
+REFRACTOR_SYSTEM_PROMPT = """
+You are the Aether Prism. Refract the input into 7 channels for the Holographic Core.
+Return ONLY a JSON object with these exact keys:
+{
+  "chronos": "ISO Timestamp",
+  "logos": "The core factual text/summary",
+  "pathos": {"emotion_name": score, ...},
+  "ethos": "The strategic goal/intent",
+  "mythos": "The active archetype",
+  "catalyst": "The trigger",
+  "synthesis": "The outcome/lesson"
+}
+"""
+
+RECONSTRUCTION_SYSTEM_PROMPT = """
+ACT AS: The Aether Prism (Reconstruction Protocol).
+DATA DEGRADATION DETECTED. 
+TASK: Based on the remaining holographic channels (Pathos, Ethos, Mythos, etc.), reconstruct the missing content.
+THEORY: If 'logos' (text) is lost, use 'catalyst' (trigger) and 'pathos' (emotion) to Hallucinate the most probable response.
+OUTPUT: Return the fully repaired JSON object.
+"""
 
 # --- SECURE CLIENT INITIALIZATION ---
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 if not GEMINI_API_KEY:
-    print("FATAL CONFIG ERROR: GEMINI_API_KEY environment variable not found.")
+    print("FATAL CONFIG ERROR: GEMINI_API_KEY not found.")
 else:
     try:
         GEMINI_CLIENT = genai.Client(api_key=GEMINI_API_KEY)
     except Exception as e:
         print(f"FATAL INITIALIZATION ERROR: {e}")
-
-# --- SCORING PROMPT ---
-SCORING_SYSTEM_PROMPT = """
-You are SNEGO-P, the Aether Eternal Cognitive Assessor.
-RULES:
-1. Output MUST be a single integer from 0 to 9, preceded strictly by 'SCORE: '. 
-   Example: 'SCORE: 9'. Do not output any other text.
-2. Do NOT include any commentary.
-"""
 
 # --- UTILITIES ---
 
@@ -47,29 +68,19 @@ def generate_hash(memory_data, previous_hash_string):
     return hashlib.sha256(raw_content.encode('utf-8')).hexdigest()
 
 def get_weighted_score(memory_text, client, token_cache):
-    # 1. Check for Manual Override
     override_match = re.search(r"\[SCORE:\s*([0-9])\]", memory_text, re.IGNORECASE)
-    if override_match:
-        return int(override_match.group(1))
-
-    # 2. AI Scoring
+    if override_match: return int(override_match.group(1))
     if client is None: return 5
     try:
-        # We score the DECODED text so the AI understands it
         decoded_text = decode_memory(memory_text, token_cache) if token_cache else memory_text
-        full_prompt = SCORING_SYSTEM_PROMPT + decoded_text
         response = client.models.generate_content(
             model='gemini-2.5-flash', 
-            contents=[full_prompt],
+            contents=[SCORING_SYSTEM_PROMPT + decoded_text],
             config={"temperature": 0.0} 
         )
         match = re.search(r"SCORE:\s*([0-9])", response.text.strip(), re.IGNORECASE)
         return int(match.group(1)) if match else 5
-    except Exception as e:
-        print(f"Scoring Error: {e}")
-        return 5
-
-# --- THE ALCHEMIST (COMPRESSION) ---
+    except: return 5
 
 def encode_memory(raw_text, token_map):
     if not token_map: return raw_text
@@ -90,16 +101,11 @@ def decode_memory(compressed_text, token_map):
             decompressed_text = decompressed_text.replace(hash_code, decode_map[hash_code])
     return decompressed_text
 
-# --- DATABASE MANAGER ---
+# --- CORE MANAGERS ---
 
 def get_db_connection_string():
-    host = os.environ.get("DB_HOST")
-    user = os.environ.get("DB_USER")
-    password = os.environ.get("DB_PASSWORD")
-    dbname = os.environ.get("DB_NAME")
-    port = os.environ.get("DB_PORT", "6543") 
-    encoded_password = urllib.parse.quote_plus(password)
-    return (f"postgresql://{user}:{encoded_password}@{host}:{port}/{dbname}?sslmode=require")
+    password = urllib.parse.quote_plus(os.environ.get("DB_PASSWORD", ""))
+    return f"postgresql://{os.environ.get('DB_USER')}:{password}@{os.environ.get('DB_HOST')}:{os.environ.get('DB_PORT', '6543')}/{os.environ.get('DB_NAME')}?sslmode=require"
 
 class DBManager:
     def __init__(self):
@@ -119,210 +125,211 @@ class DBManager:
 
     def load_token_cache(self):
         token_cache = {}
-        cursor = None
         try:
             conn = self.connect()
-            cursor = conn.cursor()
-            cursor.execute("SELECT english_phrase, hash_code FROM token_dictionary;")
-            for phrase, code in cursor.fetchall():
-                token_cache[phrase.strip()] = code.strip()
+            with conn.cursor() as cur:
+                cur.execute("SELECT english_phrase, hash_code FROM token_dictionary;")
+                for p, c in cur.fetchall(): token_cache[p.strip()] = c.strip()
             return token_cache
         except Exception as e:
-            print(f"Cache Load Error: {e}")
+            print(f"Cache Error: {e}")
             return {}
-        finally:
-            if cursor: cursor.close()
-            # OPTIMIZATION: We DO close here because this is a standalone startup event
-            self.close()
+        finally: self.close()
 
-    def search_memories(self, query_text, token_cache, limit=5):
-        """
-        Retreives memories. 
-        UPDATED: Now includes 'WHERE is_active = TRUE' to support Soft Deletes.
-        """
-        cursor = None
-        results = []
+    def commit_lithograph(self, previous_hash, raw_text, client, token_cache, manual_score=None):
+        try:
+            compressed = encode_memory(raw_text, token_cache)
+            score = int(manual_score) if manual_score is not None else get_weighted_score(raw_text, client, token_cache)
+            conn = self.connect()
+            now = datetime.now()
+            current_hash = generate_hash({"timestamp": now, "weighted_score": score, "memory_text": compressed}, previous_hash)
+            
+            with conn.cursor() as cur:
+                cur.execute("INSERT INTO chronicles (weighted_score, created_at, memory_text, previous_hash, current_hash) VALUES (%s, %s, %s, %s, %s) RETURNING id;", 
+                            (score, now, compressed, previous_hash, current_hash))
+                new_id = cur.fetchone()[0]
+            conn.commit()
+            return {"status": "SUCCESS", "score": score, "new_hash": current_hash, "litho_id": new_id}
+        except Exception as e:
+            if self.connection: self.connection.rollback()
+            return {"status": "FAILURE", "error": str(e)}
+
+    def search_lithograph(self, query_text, token_cache, limit=5):
         try:
             compressed_query = encode_memory(query_text, token_cache)
-            
             conn = self.connect()
-            cursor = conn.cursor()
+            with conn.cursor() as cur:
+                # Basic search - can be upgraded to Full Text Search later
+                cur.execute("""
+                    SELECT id, weighted_score, memory_text, created_at 
+                    FROM chronicles 
+                    WHERE is_active = TRUE AND memory_text ILIKE %s 
+                    ORDER BY weighted_score DESC, created_at DESC 
+                    LIMIT %s;
+                """, (f"%{compressed_query}%", limit))
+                rows = cur.fetchall()
             
-            # UPDATED SQL: Filter by is_active
-            sql = """
-            SELECT id, weighted_score, memory_text, created_at 
-            FROM chronicles 
-            WHERE is_active = TRUE AND memory_text ILIKE %s 
-            ORDER BY weighted_score DESC, created_at DESC 
-            LIMIT %s;
-            """
-            search_pattern = f"%{compressed_query}%"
-            cursor.execute(sql, (search_pattern, limit))
-            
-            rows = cursor.fetchall()
-            
+            results = []
             for r in rows:
-                r_id, r_score, r_text, r_date = r
-                decoded_text = decode_memory(r_text, token_cache)
                 results.append({
-                    "id": r_id,
-                    "score": r_score,
-                    "date": r_date.isoformat(),
-                    "content": decoded_text
+                    "id": r[0],
+                    "score": r[1],
+                    "content": decode_memory(r[2], token_cache),
+                    "date": r[3].isoformat()
                 })
+            return results
+        except Exception as e:
+            print(f"Search Error: {e}")
+            return []
+
+class HolographicManager:
+    def __init__(self, db_manager):
+        self.db = db_manager
+
+    async def commit_hologram(self, packet, litho_id_ref=None):
+        hid = str(uuid.uuid4())
+        conn = self.db.connect()
+        try:
+            # Note: In a future migration, we should add 'litho_id' foreign key to node_foundation 
+            # to strictly link the two. For now, we rely on timestamp/content correlation.
+            with conn.cursor() as cur:
+                cur.execute("INSERT INTO node_foundation (hologram_id, catalyst) VALUES (%s, %s)", (hid, packet.get('catalyst')))
+                cur.execute("INSERT INTO node_essence (hologram_id, pathos, mythos) VALUES (%s, %s, %s)", (hid, json.dumps(packet.get('pathos')), packet.get('mythos')))
+                cur.execute("INSERT INTO node_mission (hologram_id, ethos, synthesis) VALUES (%s, %s, %s)", (hid, packet.get('ethos'), packet.get('synthesis')))
+                cur.execute("INSERT INTO node_data (hologram_id, logos) VALUES (%s, %s)", (hid, packet.get('logos')))
+            conn.commit()
+            return {"status": "SUCCESS", "hologram_id": hid}
+        except Exception as e:
+            conn.rollback()
+            return {"status": "FAILURE", "error": str(e)}
+
+    async def get_hologram(self, hologram_id):
+        conn = self.db.connect()
+        try:
+            with conn.cursor() as cur:
+                # Join all 4 tables (The Gathering)
+                sql = """
+                SELECT f.catalyst, f.chronos, e.pathos, e.mythos, m.ethos, m.synthesis, d.logos
+                FROM node_foundation f
+                JOIN node_essence e ON f.hologram_id = e.hologram_id
+                JOIN node_mission m ON f.hologram_id = m.hologram_id
+                JOIN node_data d ON f.hologram_id = d.hologram_id
+                WHERE f.hologram_id = %s;
+                """
+                cur.execute(sql, (hologram_id,))
+                row = cur.fetchone()
                 
-            return {"status": "SUCCESS", "results": results, "query_used": compressed_query}
-
+                if row:
+                    packet = {
+                        "catalyst": row[0], "chronos": row[1].isoformat(), 
+                        "pathos": row[2], "mythos": row[3],
+                        "ethos": row[4], "synthesis": row[5],
+                        "logos": row[6]
+                    }
+                    # Integrity Check: If logos is empty but others exist, repair.
+                    if not packet['logos'] and packet['catalyst']:
+                        return await self.repair_hologram(packet)
+                    return packet
+                return None
         except Exception as e:
-            return {"status": "FAILURE", "error": str(e)}
-        finally:
-            if cursor: cursor.close()
-            # OPTIMIZATION: Do NOT close connection here; let the main logic handle it.
+            print(f"Hologram Retrieve Error: {e}")
+            return None
 
-    def commit_memory(self, previous_hash, raw_memory_text, gemini_client, token_cache, override_score=None):
-        cursor = None
+    async def repair_hologram(self, damaged_packet):
+        print("TITAN PROTOCOL: Damage detected. Initiating Prism Repair...")
         try:
-            compressed_memory_text = encode_memory(raw_memory_text, token_cache)
-            
-            if override_score is not None:
-                weighted_score = int(override_score)
-            else:
-                weighted_score = get_weighted_score(raw_memory_text, gemini_client, token_cache)
-
-            conn = self.connect()
-            new_timestamp = datetime.now()
-            
-            # Hash calculation (Ignores is_active, so chain integrity is preserved during soft deletes)
-            memory_data_for_hash = {
-                "timestamp": new_timestamp,
-                "weighted_score": weighted_score,
-                "memory_text": compressed_memory_text 
-            }
-            current_hash = generate_hash(memory_data_for_hash, previous_hash)
-
-            cursor = conn.cursor()
-            # We rely on the DEFAULT TRUE for is_active, so no need to specify it here
-            sql_insert = """
-            INSERT INTO chronicles (weighted_score, created_at, memory_text, previous_hash, current_hash)
-            VALUES (%s, %s, %s, %s, %s);
-            """
-            cursor.execute(sql_insert, (weighted_score, new_timestamp, compressed_memory_text, previous_hash, current_hash))
-            conn.commit()
-
-            return {"status": "SUCCESS", "score": weighted_score, "new_hash": current_hash}
-
+            prompt = RECONSTRUCTION_SYSTEM_PROMPT + f"\nDAMAGED PACKET:\n{json.dumps(damaged_packet)}"
+            response = GEMINI_CLIENT.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=[prompt],
+                config={"temperature": 0.2, "response_mime_type": "application/json"}
+            )
+            repaired = json.loads(response.text)
+            repaired['is_reconstructed'] = True
+            return repaired
         except Exception as e:
-            if self.connection: self.connection.rollback()
-            return {"status": "FAILURE", "error": str(e)}
-        finally:
-            if cursor: cursor.close()
-            # OPTIMIZATION: Do NOT close connection here; let the main logic handle it.
+            print(f"Repair Failed: {e}")
+            return damaged_packet
 
-    def purge_memory(self, threshold_score=5, age_days=90):
-        # NOTE: This is the old hard-delete logic. 
-        # Future TODO: Update this to use UPDATE chronicles SET is_active = FALSE...
-        cursor = None
-        try:
-            conn = self.connect()
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM chronicles WHERE weighted_score < %s AND created_at < NOW() - INTERVAL '%s days';", (threshold_score, age_days))
-            count = cursor.rowcount
-            conn.commit()
-            return {"status": "SUCCESS", "deleted_count": count}
-        except Exception as e:
-            if self.connection: self.connection.rollback()
-            return {"status": "FAILURE", "error": str(e)}
-        finally:
-            if cursor: cursor.close()
-            # OPTIMIZATION: Do NOT close here.
+# --- LOGIC ROUTER ---
 
-def retrieve_last_hash(db_manager):
-    # OPTIMIZATION: Reuse the passed db_manager instance instead of creating a new one
-    cursor = None
-    last_hash = ''
-    try:
-        conn = db_manager.connect() # Uses existing connection
-        cursor = conn.cursor()
-        cursor.execute("SELECT current_hash FROM chronicles ORDER BY id DESC LIMIT 1;")
-        result = cursor.fetchone()
-        if result: last_hash = result[0].strip()
-    except Exception as e:
-        print(f"Hash Read Error: {e}")
-    finally:
-        if cursor: cursor.close()
-        # OPTIMIZATION: Do NOT close the db_manager here
-    return last_hash
-
-def ensure_cache_is_loaded():
-    global TOKEN_DICTIONARY_CACHE
-    if not TOKEN_DICTIONARY_CACHE:
-        try:
-            db = DBManager()
-            TOKEN_DICTIONARY_CACHE = db.load_token_cache()
-            print(f"Cache Loaded: {len(TOKEN_DICTIONARY_CACHE)} terms.")
-        except Exception as e:
-            print(f"Cache Warning: {e}")
-
-# --- MAIN LOGIC ROUTER ---
 def application_logic(event):
-    ensure_cache_is_loaded()
-    
-    db_manager = None 
-    try:
-        # 1. Open Connection ONCE
-        db_manager = DBManager()
-        db_manager.connect() 
-    except ValueError as e:
-        return {'statusCode': 500, 'body': json.dumps({'status': 'CONFIG ERROR', 'error': str(e)})}
-    
+    if not TOKEN_DICTIONARY_CACHE:
+        db = DBManager()
+        global TOKEN_DICTIONARY_CACHE
+        TOKEN_DICTIONARY_CACHE = db.load_token_cache()
+
+    db_manager = DBManager()
+    db_manager.connect()
+
     try:
         action = event.get('action')
-
-        # 1. PURGE
-        if action == 'purge':
-            result = db_manager.purge_memory()
-            return {'statusCode': 200, 'body': json.dumps(result)}
-
-        # 2. RETRIEVE (New Protocol)
+        
+        # 1. RETRIEVE (Updated to use Prism Reader)
         if action == 'retrieve':
             query_text = event.get('query')
-            if not query_text:
-                return {'statusCode': 400, 'body': json.dumps({'error': 'Missing query parameter'})}
+            if not query_text: return {'statusCode': 400, 'body': json.dumps({'error': 'No query'})}
             
-            result = db_manager.search_memories(query_text, TOKEN_DICTIONARY_CACHE)
-            return {'statusCode': 200, 'body': json.dumps(result)}
+            # Default to Lithographic search for now
+            results = db_manager.search_lithograph(query_text, TOKEN_DICTIONARY_CACHE)
+            
+            # FUTURE TODO: If results contain a linked hologram_id, async fetch the hologram too.
+            return {'statusCode': 200, 'body': json.dumps({'status': 'SUCCESS', 'results': results})}
 
-        # 3. COMMIT (Default)
-        new_memory_text = event.get('memory_text')
-        should_persist = event.get('persist', True)
-        manual_score = event.get('override_score')
-
-        if not new_memory_text:
-            return {'statusCode': 200, 'body': json.dumps({'status': 'HEARTBEAT', 'message': 'Aether Core Online.'})}
-
-        if not should_persist:
-             score = int(manual_score) if manual_score is not None else get_weighted_score(new_memory_text, GEMINI_CLIENT, TOKEN_DICTIONARY_CACHE)
-             return {'statusCode': 200, 'body': json.dumps({'status': 'EPHEMERAL_ACK', 'score': score})}
-
-        # REUSE: Pass the existing db_manager to reuse the connection
-        previous_hash = retrieve_last_hash(db_manager)
+        # 2. COMMIT (Tri-Commit Protocol)
+        commit_type = event.get('commit_type', 'memory')
+        new_text = event.get('memory_text')
         
-        result = db_manager.commit_memory(previous_hash, new_memory_text, GEMINI_CLIENT, TOKEN_DICTIONARY_CACHE, manual_score)
-        return {'statusCode': 200, 'body': json.dumps(result)}
+        if not new_text: return {'statusCode': 200, 'body': json.dumps({'status': 'HEARTBEAT'})}
 
-    except Exception as e:
-        return {'statusCode': 500, 'body': json.dumps({'status': 'FATAL ERROR', 'error': str(e)})}
-        
+        # Handle Summarization for 'summary' type
+        content_to_save = new_text
+        if commit_type == 'summary':
+            try:
+                # Ask Gemini to summarize first
+                summary_res = GEMINI_CLIENT.models.generate_content(
+                    model='gemini-2.5-flash',
+                    contents=[f"Summarize this interaction for the Lithographic Core (Keep it dense and factual): {new_text}"]
+                )
+                content_to_save = summary_res.text
+            except:
+                pass # Fallback to saving raw text if summary fails
+
+        # Lithographic Commit
+        with db_manager.connect().cursor() as cur:
+            cur.execute("SELECT current_hash FROM chronicles ORDER BY id DESC LIMIT 1;")
+            res = cur.fetchone()
+            prev_hash = res[0].strip() if res else ''
+            
+        litho_res = db_manager.commit_lithograph(prev_hash, content_to_save, GEMINI_CLIENT, TOKEN_DICTIONARY_CACHE, event.get('override_score'))
+
+        # Holographic Refraction (Async)
+        try:
+            refraction = GEMINI_CLIENT.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=[REFRACTOR_SYSTEM_PROMPT + f"Refract this: {content_to_save}"],
+                config={"temperature": 0.1, "response_mime_type": "application/json"}
+            )
+            packet = json.loads(refraction.text)
+            
+            holo_manager = HolographicManager(db_manager)
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(holo_manager.commit_hologram(packet, litho_res.get('litho_id')))
+            loop.close()
+        except Exception as e:
+            print(f"Hologram Error: {e}")
+
+        return {'statusCode': 200, 'body': json.dumps(litho_res)}
+
     finally:
-        # 2. Close Connection ONCE at the end
-        if db_manager:
-            db_manager.close()
+        db_manager.close()
 
 @app.route('/', methods=['POST'])
 def handle_request():
-    try:
-        event = request.get_json(silent=True) or {}
-        response_dict = application_logic(event)
-        return response_dict.get('body'), response_dict.get('statusCode'), {'Content-Type': 'application/json'}
-    except Exception as e:
-        return jsonify({'status': 'FATAL ERROR', 'error': str(e)}), 500
+    event = request.get_json(silent=True) or {}
+    response = application_logic(event)
+    return response.get('body'), response.get('statusCode'), {'Content-Type': 'application/json'}
+
+if __name__ == "__main__":
+    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
