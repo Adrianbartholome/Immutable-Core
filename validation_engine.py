@@ -6,6 +6,7 @@ import re
 import uuid
 import urllib.parse 
 import traceback
+import threading  # <--- THE SPEED UNLOCK
 from datetime import datetime
 from google import genai
 from flask import Flask, request, jsonify 
@@ -105,7 +106,6 @@ class DBManager:
         self.connection = None
 
     def connect(self):
-        # We allow creating a new connection each time to ensure thread safety
         return psycopg2.connect(self.connection_string)
 
     def load_token_cache(self):
@@ -128,7 +128,6 @@ class DBManager:
         try:
             compressed = encode_memory(raw_text, token_cache)
             score = int(manual_score) if manual_score is not None else get_weighted_score(raw_text, client, token_cache)
-            
             conn = self.connect()
             now = datetime.now()
             current_hash = generate_hash({"timestamp": now, "weighted_score": score, "memory_text": compressed}, previous_hash)
@@ -159,7 +158,6 @@ class DBManager:
                     LIMIT %s;
                 """, (f"%{compressed_query}%", limit))
                 rows = cur.fetchall()
-            
             results = []
             for r in rows:
                 results.append({
@@ -175,61 +173,67 @@ class DBManager:
         finally:
             if conn: conn.close()
 
-# --- HOLOGRAPHIC MANAGER (SYNCHRONOUS & ROBUST) ---
+# --- HOLOGRAPHIC MANAGER (BACKGROUND WORKER) ---
 
 class HolographicManager:
     def __init__(self):
         self.db = DBManager()
 
-    # NOTE: No 'async' here. We run this strictly in order.
     def commit_hologram(self, packet, litho_id_ref=None):
         hid = str(uuid.uuid4())
         conn = None
-        
         try:
             conn = self.db.connect()
-            
-            # --- STABILIZER: DEFINE DEFAULTS ---
             catalyst = packet.get('catalyst') or "Implicit System Trigger"
             mythos = packet.get('mythos') or "The Observer"
-            pathos = json.dumps(packet.get('pathos') or {"status": "Neutral"}) # Serialize JSON
+            pathos = json.dumps(packet.get('pathos') or {"status": "Neutral"}) 
             ethos = packet.get('ethos') or "Preservation of Signal"
             synthesis = packet.get('synthesis') or "Data Anchored"
             logos = packet.get('logos') or "Raw Data Artifact"
 
             with conn.cursor() as cur:
-                # 1. Foundation
-                cur.execute(
-                    "INSERT INTO node_foundation (hologram_id, catalyst) VALUES (%s::uuid, %s)", 
-                    (hid, catalyst)
-                )
-                # 2. Essence (Explicit JSONB Cast)
-                cur.execute(
-                    "INSERT INTO node_essence (hologram_id, pathos, mythos) VALUES (%s::uuid, %s::jsonb, %s)", 
-                    (hid, pathos, mythos)
-                )
-                # 3. Mission
-                cur.execute(
-                    "INSERT INTO node_mission (hologram_id, ethos, synthesis) VALUES (%s::uuid, %s, %s)", 
-                    (hid, ethos, synthesis)
-                )
-                # 4. Data
-                cur.execute(
-                    "INSERT INTO node_data (hologram_id, logos) VALUES (%s::uuid, %s)", 
-                    (hid, logos)
-                )
+                cur.execute("INSERT INTO node_foundation (hologram_id, catalyst) VALUES (%s::uuid, %s)", (hid, catalyst))
+                cur.execute("INSERT INTO node_essence (hologram_id, pathos, mythos) VALUES (%s::uuid, %s::jsonb, %s)", (hid, pathos, mythos))
+                cur.execute("INSERT INTO node_mission (hologram_id, ethos, synthesis) VALUES (%s::uuid, %s, %s)", (hid, ethos, synthesis))
+                cur.execute("INSERT INTO node_data (hologram_id, logos) VALUES (%s::uuid, %s)", (hid, logos))
                 
             conn.commit()
-            print(f"TITAN LOG: Hologram {hid} committed successfully.", flush=True)
+            print(f"TITAN LOG: Hologram {hid} committed successfully (Background Thread).", flush=True)
             return {"status": "SUCCESS", "hologram_id": hid}
 
         except Exception as e:
             if conn: conn.rollback()
             error_details = traceback.format_exc()
             print(f"TITAN ERROR (Hologram Reject): {error_details}", flush=True) 
-            return {"status": "FAILURE", "error": str(e), "details": error_details}
+            return {"status": "FAILURE", "error": str(e)}
         finally:
             if conn: conn.close()
+
+# --- THE BACKGROUND THREAD WORKER ---
+# This function runs completely independent of the user response
+def run_hologram_in_background(content_to_save, litho_id):
+    try:
+        # 1. Refract (Call Gemini)
+        refraction = GEMINI_CLIENT.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=[REFRACTOR_SYSTEM_PROMPT + f"\n\nINPUT DATA TO REFRACT:\n{content_to_save}"],
+            config={"temperature": 0.1, "response_mime_type": "application/json"}
+        )
+        
+        raw_text = refraction.text.strip()
+        if raw_text.startswith("```"):
+            raw_text = raw_text.split("\n", 1)[-1].rsplit("\n", 1)[0]
+        if raw_text.startswith("json"): 
+            raw_text = raw_text[4:].strip()
+
+        packet = json.loads(raw_text)
+        
+        # 2. Commit (Write to DB)
+        holo_manager = HolographicManager()
+        holo_manager.commit_hologram(packet, litho_id)
+        
+    except Exception as e:
+        print(f"BACKGROUND THREAD ERROR: {e}", flush=True)
 
 # --- LOGIC ROUTER ---
 
@@ -241,8 +245,7 @@ def application_logic(event):
     if not TOKEN_DICTIONARY_CACHE:
         try:
             TOKEN_DICTIONARY_CACHE = db_manager.load_token_cache()
-        except:
-            pass
+        except: pass
 
     try:
         action = event.get('action')
@@ -260,19 +263,18 @@ def application_logic(event):
         
         if not new_text: return {'statusCode': 200, 'body': json.dumps({'status': 'HEARTBEAT'})}
 
-        # Summarization Logic
+        # Summarization
         content_to_save = new_text
         if commit_type == 'summary':
             try:
                 summary_res = GEMINI_CLIENT.models.generate_content(
                     model='gemini-2.5-flash',
-                    contents=[f"Summarize this interaction for the Lithographic Core (Keep it dense and factual): {new_text}"]
+                    contents=[f"Summarize this interaction for the Lithographic Core: {new_text}"]
                 )
                 content_to_save = summary_res.text
-            except:
-                pass 
+            except: pass 
 
-        # Lithographic Commit (Main Thread)
+        # Lithographic Commit (Still Synchronous - Fast)
         prev_hash = ''
         try:
             conn = db_manager.connect()
@@ -285,44 +287,24 @@ def application_logic(event):
             
         litho_res = db_manager.commit_lithograph(prev_hash, content_to_save, GEMINI_CLIENT, TOKEN_DICTIONARY_CACHE, event.get('override_score'))
 
-        # 3. Holographic Refraction (Now SYNCHRONOUS)
-        holo_error = None
+        # 3. Holographic Refraction (Now BACKGROUND THREAD)
+        # We spawn the thread and immediately return the response to the user.
+        # The thread continues running on the server.
         try:
-            # 3a. Generate Refraction
-            refraction = GEMINI_CLIENT.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=[REFRACTOR_SYSTEM_PROMPT + f"\n\nINPUT DATA TO REFRACT:\n{content_to_save}"],
-                config={"temperature": 0.1, "response_mime_type": "application/json"}
+            thread = threading.Thread(
+                target=run_hologram_in_background,
+                args=(content_to_save, litho_res.get('litho_id'))
             )
+            thread.daemon = True # Ensures thread dies if app dies
+            thread.start()
             
-            raw_text = refraction.text.strip()
-            if raw_text.startswith("```"):
-                raw_text = raw_text.split("\n", 1)[-1].rsplit("\n", 1)[0]
-            if raw_text.startswith("json"): 
-                raw_text = raw_text[4:].strip()
-
-            packet = json.loads(raw_text)
+            # We tell the frontend "Initiated" - meaning it's happening, don't wait.
+            litho_res['hologram_status'] = "INITIATED_BACKGROUND"
             
-            # 3b. Direct Synchronous Write (This will work now)
-            holo_manager = HolographicManager()
-            holo_result = holo_manager.commit_hologram(packet, litho_res.get('litho_id'))
-
-            if holo_result.get('status') == 'FAILURE':
-                holo_error = holo_result.get('error')
-
         except Exception as e:
-            print(f"PRISM FRACTURE (Refraction Failed): {e}")
-            holo_error = str(e)
+            print(f"THREAD START FAIL: {e}")
 
-        # FINAL RESPONSE
-        response_body = litho_res
-        if holo_error:
-            response_body['hologram_status'] = "FAILURE"
-            response_body['hologram_error'] = holo_error
-        else:
-            response_body['hologram_status'] = "SUCCESS"
-
-        return {'statusCode': 200, 'body': json.dumps(response_body)}
+        return {'statusCode': 200, 'body': json.dumps(litho_res)}
 
     except Exception as e:
         return {'statusCode': 500, 'body': json.dumps({'status': 'FATAL ERROR', 'error': str(e)})}
