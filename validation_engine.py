@@ -182,61 +182,62 @@ class HolographicManager:
         pass
 
     async def commit_hologram(self, packet, litho_id_ref=None):
-        # Generate ID
         hid = str(uuid.uuid4())
         
-        # --- DEBUG LOGGING (Check DigitalOcean Logs for this!) ---
-        print(f"TITAN DEBUG: Attempting to write Hologram ID: {hid}", flush=True)
-        print(f"TITAN DEBUG: Packet Data: {json.dumps(packet)}", flush=True)
+        print(f"TITAN DEBUG: Starting Hologram Transaction {hid}", flush=True)
 
-        # Create connection
         local_db = DBManager()
-        
         try:
             conn = local_db.connect()
             
-            # --- STABILIZER: DEFINE DEFAULTS ---
+            # --- PREPARE DATA ---
             catalyst = packet.get('catalyst') or "Implicit System Trigger"
             mythos = packet.get('mythos') or "The Observer"
-            pathos = json.dumps(packet.get('pathos') or {"status": "Neutral"})
+            # Ensure pathos is a JSON string
+            pathos_data = packet.get('pathos') or {"status": "Neutral"}
+            pathos = json.dumps(pathos_data) 
             ethos = packet.get('ethos') or "Preservation of Signal"
             synthesis = packet.get('synthesis') or "Data Anchored"
             logos = packet.get('logos') or "Raw Data Artifact"
 
             with conn.cursor() as cur:
-                # 1. THE REAL WRITE (With explicit UUID casting)
+                # STEP 1: FOUNDATION (Text)
+                print("TITAN STEP 1: Inserting Foundation...", flush=True)
                 cur.execute(
                     "INSERT INTO node_foundation (hologram_id, catalyst) VALUES (%s::uuid, %s)", 
                     (hid, catalyst)
                 )
+
+                # STEP 2: ESSENCE (JSON + Text) -> THE CRASH SITE
+                print("TITAN STEP 2: Inserting Essence (JSON)...", flush=True)
                 cur.execute(
-                    "INSERT INTO node_essence (hologram_id, pathos, mythos) VALUES (%s::uuid, %s, %s)", 
+                    "INSERT INTO node_essence (hologram_id, pathos, mythos) VALUES (%s::uuid, %s::jsonb, %s)", 
                     (hid, pathos, mythos)
                 )
+
+                # STEP 3: MISSION (Text)
+                print("TITAN STEP 3: Inserting Mission...", flush=True)
                 cur.execute(
                     "INSERT INTO node_mission (hologram_id, ethos, synthesis) VALUES (%s::uuid, %s, %s)", 
                     (hid, ethos, synthesis)
                 )
+
+                # STEP 4: DATA (Text)
+                print("TITAN STEP 4: Inserting Data...", flush=True)
                 cur.execute(
                     "INSERT INTO node_data (hologram_id, logos) VALUES (%s::uuid, %s)", 
                     (hid, logos)
                 )
-                
-                # 2. THE HARDCODED TEST (To verify Python connectivity)
-                test_id = str(uuid.uuid4())
-                cur.execute(
-                    "INSERT INTO node_data (hologram_id, logos) VALUES (%s::uuid, %s)", 
-                    (test_id, "PYTHON CONNECTION PROBE - IF YOU SEE THIS, PYTHON IS WORKING")
-                )
 
             conn.commit()
-            print(f"TITAN LOG: COMMIT EXECUTION FINISHED for {hid}", flush=True)
+            print(f"TITAN SUCCESS: Hologram {hid} fully committed.", flush=True)
             return {"status": "SUCCESS", "hologram_id": hid}
 
         except Exception as e:
             if local_db.connection: local_db.connection.rollback()
+            # This prints the EXACT SQL error (e.g., "invalid input syntax for type json")
             error_details = traceback.format_exc()
-            print(f"TITAN ERROR (Hologram Reject): {error_details}", flush=True) 
+            print(f"TITAN FATAL ERROR: {error_details}", flush=True) 
             return {"status": "FAILURE", "error": str(e), "details": error_details}
         finally:
             local_db.close()
