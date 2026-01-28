@@ -254,9 +254,10 @@ class HolographicManager:
 # --- LOGIC ROUTER ---
 
 def application_logic(event):
+    global TOKEN_DICTIONARY_CACHE
+
     if not TOKEN_DICTIONARY_CACHE:
         db = DBManager()
-        global TOKEN_DICTIONARY_CACHE
         TOKEN_DICTIONARY_CACHE = db.load_token_cache()
 
     db_manager = DBManager()
