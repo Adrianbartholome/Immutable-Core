@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from typing import Optional
 
 # --- APP INITIALIZATION ---
-app = FastAPI(title="Aether Titan Core (Platinum V4 - Range Purge)")
+app = FastAPI(title="Aether Titan Core (Platinum V4)")
 
 app.add_middleware(
     CORSMiddleware,
@@ -148,7 +148,6 @@ class DBManager:
         finally:
             if conn: conn.close()
 
-    # --- SINGLE DELETE ---
     def delete_lithograph(self, target_id):
         conn = None
         try:
@@ -168,7 +167,6 @@ class DBManager:
         finally:
             if conn: conn.close()
 
-    # --- RANGE DELETE (NEW) ---
     def delete_range(self, start_id, end_id):
         conn = None
         try:
@@ -287,7 +285,7 @@ class EventModel(BaseModel):
     memory_text: Optional[str] = None
     override_score: Optional[int] = None
     target_id: Optional[int] = None 
-    range_end: Optional[int] = None # Added for Range Deletion
+    range_end: Optional[int] = None
 
 @app.get("/")
 def root_health_check():
@@ -308,26 +306,22 @@ def handle_request(event: EventModel, background_tasks: BackgroundTasks):
         except: pass
 
     try:
-        # 1. DELETE ACTION (Single)
         if event.action == 'delete':
             if not event.target_id: return {"error": "Target ID required for deletion"}
             log(f"Processing Deletion for ID: {event.target_id}")
             return db_manager.delete_lithograph(event.target_id)
 
-        # 1.5 RANGE DELETE ACTION (New)
         if event.action == 'delete_range':
             if not event.target_id or not event.range_end:
                 return {"error": "Start and End IDs required"}
             log(f"Processing Range Delete: {event.target_id} - {event.range_end}")
             return db_manager.delete_range(event.target_id, event.range_end)
 
-        # 2. RETRIEVE
         if event.action == 'retrieve':
             if not event.query: return {"error": "No query"}
             results = db_manager.search_lithograph(event.query, TOKEN_DICTIONARY_CACHE)
             return {"status": "SUCCESS", "results": results}
 
-        # 3. COMMIT
         if not event.memory_text: return {"status": "HEARTBEAT"}
 
         log(f"Processing Commit: {event.commit_type}")
