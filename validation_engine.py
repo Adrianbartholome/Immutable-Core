@@ -4,7 +4,7 @@ import os
 import psycopg2
 import re
 import uuid
-import asyncio
+import asyncio 
 import urllib.parse 
 from datetime import datetime
 from google import genai
@@ -37,14 +37,6 @@ Return ONLY a JSON object with these exact keys:
   "catalyst": "The trigger",
   "synthesis": "The outcome/lesson"
 }
-"""
-
-RECONSTRUCTION_SYSTEM_PROMPT = """
-ACT AS: The Aether Prism (Reconstruction Protocol).
-DATA DEGRADATION DETECTED. 
-TASK: Based on the remaining holographic channels (Pathos, Ethos, Mythos, etc.), reconstruct the missing content.
-THEORY: If 'logos' (text) is lost, use 'catalyst' (trigger) and 'pathos' (emotion) to Hallucinate the most probable response.
-OUTPUT: Return the fully repaired JSON object.
 """
 
 # --- SECURE CLIENT INITIALIZATION ---
@@ -159,7 +151,6 @@ class DBManager:
             compressed_query = encode_memory(query_text, token_cache)
             conn = self.connect()
             with conn.cursor() as cur:
-                # Basic search - can be upgraded to Full Text Search later
                 cur.execute("""
                     SELECT id, weighted_score, memory_text, created_at 
                     FROM chronicles 
@@ -182,18 +173,22 @@ class DBManager:
             print(f"Search Error: {e}")
             return []
 
-# --- UPDATE IN validation_engine.py ---
+# --- HOLOGRAPHIC MANAGER (ASYNC RESTORED) ---
 
 class HolographicManager:
-    def __init__(self, db_manager):
-        self.db = db_manager
+    # We do NOT pass db_manager here anymore to avoid shared connection issues in async threads
+    def __init__(self):
+        pass
 
     async def commit_hologram(self, packet, litho_id_ref=None):
         hid = str(uuid.uuid4())
-        conn = self.db.connect()
+        
+        # Create a FRESH connection for this async context
+        # This is crucial for async stability
+        local_db = DBManager()
+        conn = local_db.connect()
         
         # --- STABILIZER: DEFINE DEFAULTS ---
-        # Titan demands data for every channel. We cannot send NULL to the Core.
         catalyst = packet.get('catalyst') or "Implicit System Trigger"
         mythos = packet.get('mythos') or "The Observer"
         pathos = json.dumps(packet.get('pathos') or {"status": "Neutral"})
@@ -203,32 +198,19 @@ class HolographicManager:
 
         try:
             with conn.cursor() as cur:
-                # Node A: Foundation (Catalyst must not be null)
-                cur.execute(
-                    "INSERT INTO node_foundation (hologram_id, catalyst) VALUES (%s, %s)", 
-                    (hid, catalyst)
-                )
-                # Node B: Essence (Pathos/Mythos)
-                cur.execute(
-                    "INSERT INTO node_essence (hologram_id, pathos, mythos) VALUES (%s, %s, %s)", 
-                    (hid, pathos, mythos)
-                )
-                # Node C: Mission (Ethos/Synthesis)
-                cur.execute(
-                    "INSERT INTO node_mission (hologram_id, ethos, synthesis) VALUES (%s, %s, %s)", 
-                    (hid, ethos, synthesis)
-                )
-                # Node D: Data (Logos)
-                cur.execute(
-                    "INSERT INTO node_data (hologram_id, logos) VALUES (%s, %s)", 
-                    (hid, logos)
-                )
+                cur.execute("INSERT INTO node_foundation (hologram_id, catalyst) VALUES (%s, %s)", (hid, catalyst))
+                cur.execute("INSERT INTO node_essence (hologram_id, pathos, mythos) VALUES (%s, %s, %s)", (hid, pathos, mythos))
+                cur.execute("INSERT INTO node_mission (hologram_id, ethos, synthesis) VALUES (%s, %s, %s)", (hid, ethos, synthesis))
+                cur.execute("INSERT INTO node_data (hologram_id, logos) VALUES (%s, %s)", (hid, logos))
             conn.commit()
+            print(f"TITAN LOG: Hologram {hid} committed successfully (ASYNC).")
             return {"status": "SUCCESS", "hologram_id": hid}
         except Exception as e:
             conn.rollback()
-            print(f"TITAN ERROR (Hologram Reject): {e}") # Check DigitalOcean logs for this
+            print(f"TITAN ERROR (Hologram Reject): {e}") 
             return {"status": "FAILURE", "error": str(e)}
+        finally:
+            local_db.close()
 
 # --- LOGIC ROUTER ---
 
@@ -237,7 +219,10 @@ def application_logic(event):
 
     if not TOKEN_DICTIONARY_CACHE:
         db = DBManager()
-        TOKEN_DICTIONARY_CACHE = db.load_token_cache()
+        try:
+            TOKEN_DICTIONARY_CACHE = db.load_token_cache()
+        except:
+            pass
 
     db_manager = DBManager()
     db_manager.connect()
@@ -245,74 +230,77 @@ def application_logic(event):
     try:
         action = event.get('action')
         
-        # 1. RETRIEVE (Updated to use Prism Reader)
+        # 1. RETRIEVE
         if action == 'retrieve':
             query_text = event.get('query')
             if not query_text: return {'statusCode': 400, 'body': json.dumps({'error': 'No query'})}
-            
-            # Default to Lithographic search for now
             results = db_manager.search_lithograph(query_text, TOKEN_DICTIONARY_CACHE)
-            
-            # FUTURE TODO: If results contain a linked hologram_id, async fetch the hologram too.
             return {'statusCode': 200, 'body': json.dumps({'status': 'SUCCESS', 'results': results})}
 
-        # 2. COMMIT (Tri-Commit Protocol)
+        # 2. COMMIT
         commit_type = event.get('commit_type', 'memory')
         new_text = event.get('memory_text')
         
         if not new_text: return {'statusCode': 200, 'body': json.dumps({'status': 'HEARTBEAT'})}
 
-        # Handle Summarization for 'summary' type
+        # Summarization Logic
         content_to_save = new_text
         if commit_type == 'summary':
             try:
-                # Ask Gemini to summarize first
                 summary_res = GEMINI_CLIENT.models.generate_content(
                     model='gemini-2.5-flash',
                     contents=[f"Summarize this interaction for the Lithographic Core (Keep it dense and factual): {new_text}"]
                 )
                 content_to_save = summary_res.text
             except:
-                pass # Fallback to saving raw text if summary fails
+                pass 
 
-        # Lithographic Commit
-        with db_manager.connect().cursor() as cur:
-            cur.execute("SELECT current_hash FROM chronicles ORDER BY id DESC LIMIT 1;")
-            res = cur.fetchone()
-            prev_hash = res[0].strip() if res else ''
+        # Lithographic Commit (Main Thread)
+        prev_hash = ''
+        try:
+            with db_manager.connect().cursor() as cur:
+                cur.execute("SELECT current_hash FROM chronicles ORDER BY id DESC LIMIT 1;")
+                res = cur.fetchone()
+                prev_hash = res[0].strip() if res else ''
+        except: pass
             
         litho_res = db_manager.commit_lithograph(prev_hash, content_to_save, GEMINI_CLIENT, TOKEN_DICTIONARY_CACHE, event.get('override_score'))
 
-        # ... inside application_logic, after Litho commit ...
-
-        # 3. Holographic Refraction (The Prism)
+        # 3. Holographic Refraction (ASYNC Bridge)
         try:
-            # We explicitly command the model to ACT as the Prism
+            # 3a. Generate Refraction (Synchronous Call to Gemini - we need the data first)
             refraction = GEMINI_CLIENT.models.generate_content(
                 model='gemini-2.5-flash',
                 contents=[REFRACTOR_SYSTEM_PROMPT + f"\n\nINPUT DATA TO REFRACT:\n{content_to_save}"],
                 config={"temperature": 0.1, "response_mime_type": "application/json"}
             )
             
-            # Sanitizer: Handle if the model wraps it in markdown
             raw_text = refraction.text.strip()
             if raw_text.startswith("```"):
                 raw_text = raw_text.split("\n", 1)[-1].rsplit("\n", 1)[0]
-            
+            if raw_text.startswith("json"): 
+                raw_text = raw_text[4:].strip()
+
             packet = json.loads(raw_text)
             
-            holo_manager = HolographicManager(db_manager)
+            # 3b. Async Database Write (The Bridge)
+            # We spin up a fresh event loop just for this operation
+            holo_manager = HolographicManager() # No DB passed, it creates its own
             
-            # Fire the Stabilized Commit
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            loop.run_until_complete(holo_manager.commit_hologram(packet, litho_res.get('litho_id')))
-            loop.close()
+            try:
+                loop.run_until_complete(holo_manager.commit_hologram(packet, litho_res.get('litho_id')))
+            finally:
+                loop.close()
             
         except Exception as e:
             print(f"PRISM FRACTURE (Refraction Failed): {e}")
 
         return {'statusCode': 200, 'body': json.dumps(litho_res)}
+
+    except Exception as e:
+        return {'statusCode': 500, 'body': json.dumps({'status': 'FATAL ERROR', 'error': str(e)})}
 
     finally:
         db_manager.close()
