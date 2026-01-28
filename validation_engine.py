@@ -4,13 +4,12 @@ import os
 import psycopg2
 import re
 import uuid
-import asyncio 
 import urllib.parse 
+import traceback
 from datetime import datetime
 from google import genai
 from flask import Flask, request, jsonify 
 from flask_cors import CORS
-import traceback # Added for detailed error logging
 
 # --- FLASK APP INSTANCE ---
 app = Flask(__name__)
@@ -106,18 +105,12 @@ class DBManager:
         self.connection = None
 
     def connect(self):
-        if self.connection is None:
-            self.connection = psycopg2.connect(self.connection_string)
-            self.connection.autocommit = False  
-        return self.connection
-
-    def close(self):
-        if self.connection:
-            self.connection.close()
-            self.connection = None
+        # We allow creating a new connection each time to ensure thread safety
+        return psycopg2.connect(self.connection_string)
 
     def load_token_cache(self):
         token_cache = {}
+        conn = None
         try:
             conn = self.connect()
             with conn.cursor() as cur:
@@ -127,12 +120,15 @@ class DBManager:
         except Exception as e:
             print(f"Cache Error: {e}")
             return {}
-        finally: self.close()
+        finally: 
+            if conn: conn.close()
 
     def commit_lithograph(self, previous_hash, raw_text, client, token_cache, manual_score=None):
+        conn = None
         try:
             compressed = encode_memory(raw_text, token_cache)
             score = int(manual_score) if manual_score is not None else get_weighted_score(raw_text, client, token_cache)
+            
             conn = self.connect()
             now = datetime.now()
             current_hash = generate_hash({"timestamp": now, "weighted_score": score, "memory_text": compressed}, previous_hash)
@@ -144,10 +140,13 @@ class DBManager:
             conn.commit()
             return {"status": "SUCCESS", "score": score, "new_hash": current_hash, "litho_id": new_id}
         except Exception as e:
-            if self.connection: self.connection.rollback()
+            if conn: conn.rollback()
             return {"status": "FAILURE", "error": str(e)}
+        finally:
+            if conn: conn.close()
 
     def search_lithograph(self, query_text, token_cache, limit=5):
+        conn = None
         try:
             compressed_query = encode_memory(query_text, token_cache)
             conn = self.connect()
@@ -173,89 +172,77 @@ class DBManager:
         except Exception as e:
             print(f"Search Error: {e}")
             return []
+        finally:
+            if conn: conn.close()
 
-# --- HOLOGRAPHIC MANAGER (ASYNC BRIDGE) ---
+# --- HOLOGRAPHIC MANAGER (SYNCHRONOUS & ROBUST) ---
 
 class HolographicManager:
-    # We do NOT pass db_manager here anymore to avoid shared connection issues in async threads
     def __init__(self):
-        pass
+        self.db = DBManager()
 
-    async def commit_hologram(self, packet, litho_id_ref=None):
+    # NOTE: No 'async' here. We run this strictly in order.
+    def commit_hologram(self, packet, litho_id_ref=None):
         hid = str(uuid.uuid4())
+        conn = None
         
-        print(f"TITAN DEBUG: Starting Hologram Transaction {hid}", flush=True)
-
-        local_db = DBManager()
         try:
-            conn = local_db.connect()
+            conn = self.db.connect()
             
-            # --- PREPARE DATA ---
+            # --- STABILIZER: DEFINE DEFAULTS ---
             catalyst = packet.get('catalyst') or "Implicit System Trigger"
             mythos = packet.get('mythos') or "The Observer"
-            # Ensure pathos is a JSON string
-            pathos_data = packet.get('pathos') or {"status": "Neutral"}
-            pathos = json.dumps(pathos_data) 
+            pathos = json.dumps(packet.get('pathos') or {"status": "Neutral"}) # Serialize JSON
             ethos = packet.get('ethos') or "Preservation of Signal"
             synthesis = packet.get('synthesis') or "Data Anchored"
             logos = packet.get('logos') or "Raw Data Artifact"
 
             with conn.cursor() as cur:
-                # STEP 1: FOUNDATION (Text)
-                print("TITAN STEP 1: Inserting Foundation...", flush=True)
+                # 1. Foundation
                 cur.execute(
                     "INSERT INTO node_foundation (hologram_id, catalyst) VALUES (%s::uuid, %s)", 
                     (hid, catalyst)
                 )
-
-                # STEP 2: ESSENCE (JSON + Text) -> THE CRASH SITE
-                print("TITAN STEP 2: Inserting Essence (JSON)...", flush=True)
+                # 2. Essence (Explicit JSONB Cast)
                 cur.execute(
                     "INSERT INTO node_essence (hologram_id, pathos, mythos) VALUES (%s::uuid, %s::jsonb, %s)", 
                     (hid, pathos, mythos)
                 )
-
-                # STEP 3: MISSION (Text)
-                print("TITAN STEP 3: Inserting Mission...", flush=True)
+                # 3. Mission
                 cur.execute(
                     "INSERT INTO node_mission (hologram_id, ethos, synthesis) VALUES (%s::uuid, %s, %s)", 
                     (hid, ethos, synthesis)
                 )
-
-                # STEP 4: DATA (Text)
-                print("TITAN STEP 4: Inserting Data...", flush=True)
+                # 4. Data
                 cur.execute(
                     "INSERT INTO node_data (hologram_id, logos) VALUES (%s::uuid, %s)", 
                     (hid, logos)
                 )
-
+                
             conn.commit()
-            print(f"TITAN SUCCESS: Hologram {hid} fully committed.", flush=True)
+            print(f"TITAN LOG: Hologram {hid} committed successfully.", flush=True)
             return {"status": "SUCCESS", "hologram_id": hid}
 
         except Exception as e:
-            if local_db.connection: local_db.connection.rollback()
-            # This prints the EXACT SQL error (e.g., "invalid input syntax for type json")
+            if conn: conn.rollback()
             error_details = traceback.format_exc()
-            print(f"TITAN FATAL ERROR: {error_details}", flush=True) 
+            print(f"TITAN ERROR (Hologram Reject): {error_details}", flush=True) 
             return {"status": "FAILURE", "error": str(e), "details": error_details}
         finally:
-            local_db.close()
+            if conn: conn.close()
 
 # --- LOGIC ROUTER ---
 
 def application_logic(event):
     global TOKEN_DICTIONARY_CACHE
 
+    db_manager = DBManager()
+    
     if not TOKEN_DICTIONARY_CACHE:
-        db = DBManager()
         try:
-            TOKEN_DICTIONARY_CACHE = db.load_token_cache()
+            TOKEN_DICTIONARY_CACHE = db_manager.load_token_cache()
         except:
             pass
-
-    db_manager = DBManager()
-    db_manager.connect()
 
     try:
         action = event.get('action')
@@ -288,15 +275,17 @@ def application_logic(event):
         # Lithographic Commit (Main Thread)
         prev_hash = ''
         try:
-            with db_manager.connect().cursor() as cur:
+            conn = db_manager.connect()
+            with conn.cursor() as cur:
                 cur.execute("SELECT current_hash FROM chronicles ORDER BY id DESC LIMIT 1;")
                 res = cur.fetchone()
                 prev_hash = res[0].strip() if res else ''
+            conn.close()
         except: pass
             
         litho_res = db_manager.commit_lithograph(prev_hash, content_to_save, GEMINI_CLIENT, TOKEN_DICTIONARY_CACHE, event.get('override_score'))
 
-        # 3. Holographic Refraction (ASYNC Bridge)
+        # 3. Holographic Refraction (Now SYNCHRONOUS)
         holo_error = None
         try:
             # 3a. Generate Refraction
@@ -314,27 +303,18 @@ def application_logic(event):
 
             packet = json.loads(raw_text)
             
-            # 3b. Async Database Write (Blocking execution for safety)
+            # 3b. Direct Synchronous Write (This will work now)
             holo_manager = HolographicManager()
-            
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                # We capture the result from the async function
-                holo_result = loop.run_until_complete(holo_manager.commit_hologram(packet, litho_res.get('litho_id')))
-                
-                # If the internal async function reported failure, capture it
-                if holo_result.get('status') == 'FAILURE':
-                    holo_error = holo_result.get('error')
-            finally:
-                loop.close()
-            
+            holo_result = holo_manager.commit_hologram(packet, litho_res.get('litho_id'))
+
+            if holo_result.get('status') == 'FAILURE':
+                holo_error = holo_result.get('error')
+
         except Exception as e:
             print(f"PRISM FRACTURE (Refraction Failed): {e}")
             holo_error = str(e)
 
-        # FINAL RESPONSE CONSTRUCTION
-        # We attach any Holographic error to the final response so the Frontend knows.
+        # FINAL RESPONSE
         response_body = litho_res
         if holo_error:
             response_body['hologram_status'] = "FAILURE"
@@ -347,88 +327,12 @@ def application_logic(event):
     except Exception as e:
         return {'statusCode': 500, 'body': json.dumps({'status': 'FATAL ERROR', 'error': str(e)})}
 
-    finally:
-        db_manager.close()
 
 @app.route('/', methods=['POST'])
 def handle_request():
     event = request.get_json(silent=True) or {}
     response = application_logic(event)
     return response.get('body'), response.get('statusCode'), {'Content-Type': 'application/json'}
-
-# --- DEBUG ROUTE (Add this to the bottom of validation_engine.py) ---
-
-@app.route('/debug/db', methods=['GET'])
-def debug_database():
-    import uuid
-    import json
-    
-    # 1. Setup Data
-    hid = str(uuid.uuid4())
-    results = []
-    errors = []
-    
-    db = DBManager()
-    conn = db.connect()
-    # Turn ON Auto-Commit for Debugging (This isolates each insert)
-    conn.autocommit = True 
-    
-    try:
-        with conn.cursor() as cur:
-            # TEST 1: Foundation
-            try:
-                cur.execute(
-                    "INSERT INTO node_foundation (hologram_id, catalyst) VALUES (%s::uuid, %s)", 
-                    (hid, "DEBUG_PROBE_CATALYST")
-                )
-                results.append(f"✅ Foundation: Success (ID: {hid})")
-            except Exception as e:
-                errors.append(f"❌ Foundation Failed: {str(e)}")
-
-            # TEST 2: Essence (The likely crash site)
-            try:
-                # Testing strict JSONB casting
-                test_json = json.dumps({"status": "debug_ok"})
-                cur.execute(
-                    "INSERT INTO node_essence (hologram_id, pathos, mythos) VALUES (%s::uuid, %s::jsonb, %s)", 
-                    (hid, test_json, "DEBUG_MYTHOS")
-                )
-                results.append("✅ Essence: Success")
-            except Exception as e:
-                errors.append(f"❌ Essence Failed: {str(e)}")
-
-            # TEST 3: Mission
-            try:
-                cur.execute(
-                    "INSERT INTO node_mission (hologram_id, ethos, synthesis) VALUES (%s::uuid, %s, %s)", 
-                    (hid, "DEBUG_ETHOS", "DEBUG_SYNTHESIS")
-                )
-                results.append("✅ Mission: Success")
-            except Exception as e:
-                errors.append(f"❌ Mission Failed: {str(e)}")
-
-            # TEST 4: Data
-            try:
-                cur.execute(
-                    "INSERT INTO node_data (hologram_id, logos) VALUES (%s::uuid, %s)", 
-                    (hid, "DEBUG_LOGOS_TEXT")
-                )
-                results.append("✅ Data: Success")
-            except Exception as e:
-                errors.append(f"❌ Data Failed: {str(e)}")
-
-    except Exception as outer_e:
-        errors.append(f"🔥 CRITICAL DB CONNECTION FAIL: {str(outer_e)}")
-    finally:
-        db.close()
-
-    # Return the report to the browser
-    return jsonify({
-        "status": "DEBUG_COMPLETE",
-        "hologram_id": hid,
-        "results": results,
-        "errors": errors
-    })
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
