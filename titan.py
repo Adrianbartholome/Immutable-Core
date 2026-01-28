@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from typing import Optional
 
 # --- APP INITIALIZATION ---
-app = FastAPI(title="Aether Titan Core (Platinum V3 - Pruning)")
+app = FastAPI(title="Aether Titan Core (Platinum V4 - Range Purge)")
 
 app.add_middleware(
     CORSMiddleware,
@@ -135,7 +135,6 @@ class DBManager:
             current_hash = generate_hash({"timestamp": now, "weighted_score": score, "memory_text": compressed}, previous_hash)
             
             with conn.cursor() as cur:
-                # Ensuring is_active defaults to TRUE
                 cur.execute("INSERT INTO chronicles (weighted_score, created_at, memory_text, previous_hash, current_hash, is_active) VALUES (%s, %s, %s, %s, %s, TRUE) RETURNING id;", 
                             (score, now, compressed, previous_hash, current_hash))
                 new_id = cur.fetchone()[0]
@@ -149,7 +148,7 @@ class DBManager:
         finally:
             if conn: conn.close()
 
-    # --- NEW: DELETE FUNCTION (Soft Delete) ---
+    # --- SINGLE DELETE ---
     def delete_lithograph(self, target_id):
         conn = None
         try:
@@ -169,13 +168,13 @@ class DBManager:
         finally:
             if conn: conn.close()
 
-    # --- NEW: BATCH DELETE FUNCTION ---
+    # --- RANGE DELETE (NEW) ---
     def delete_range(self, start_id, end_id):
         conn = None
         try:
             conn = self.connect()
             with conn.cursor() as cur:
-                cur.execute("UPDATE chronicles SET is_active = FALSE WHERE id BETWEEN %s AND %s RETURNING id;", (start_id, end_id))
+                cur.execute("UPDATE chronicles SET is_active = FALSE WHERE id >= %s AND id <= %s RETURNING id;", (start_id, end_id))
                 deleted_rows = cur.fetchall()
                 count = len(deleted_rows)
             conn.commit()
@@ -194,7 +193,6 @@ class DBManager:
             compressed_query = encode_memory(query_text, token_cache)
             conn = self.connect()
             with conn.cursor() as cur:
-                # Query now explicitly respects is_active
                 cur.execute("""
                     SELECT id, weighted_score, memory_text, created_at 
                     FROM chronicles 
@@ -289,11 +287,11 @@ class EventModel(BaseModel):
     memory_text: Optional[str] = None
     override_score: Optional[int] = None
     target_id: Optional[int] = None 
-    range_end: Optional[int] = None
+    range_end: Optional[int] = None # Added for Range Deletion
 
 @app.get("/")
 def root_health_check():
-    return {"status": "TITAN ONLINE", "mode": "PLATINUM_V3_PRUNING"}
+    return {"status": "TITAN ONLINE", "mode": "PLATINUM_V4_RANGE_PURGE"}
 
 @app.get("/health")
 def health():
@@ -310,13 +308,13 @@ def handle_request(event: EventModel, background_tasks: BackgroundTasks):
         except: pass
 
     try:
-        # 1. DELETE ACTION (New)
+        # 1. DELETE ACTION (Single)
         if event.action == 'delete':
             if not event.target_id: return {"error": "Target ID required for deletion"}
             log(f"Processing Deletion for ID: {event.target_id}")
             return db_manager.delete_lithograph(event.target_id)
 
-        # 1.5 RANGE DELETE ACTION
+        # 1.5 RANGE DELETE ACTION (New)
         if event.action == 'delete_range':
             if not event.target_id or not event.range_end:
                 return {"error": "Start and End IDs required"}
