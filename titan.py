@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from typing import Optional
 
 # --- APP INITIALIZATION ---
-app = FastAPI(title="Aether Titan Core (Platinum)")
+app = FastAPI(title="Aether Titan Core (Platinum V2)")
 
 app.add_middleware(
     CORSMiddleware,
@@ -179,7 +179,7 @@ class DBManager:
         finally:
             if conn: conn.close()
 
-# --- HOLOGRAPHIC MANAGER ---
+# --- HOLOGRAPHIC MANAGER (UPDATED: BRIDGED) ---
 class HolographicManager:
     def __init__(self):
         self.db = DBManager()
@@ -197,15 +197,17 @@ class HolographicManager:
             logos = packet.get('logos') or "Raw Data Artifact"
 
             with conn.cursor() as cur:
-                # Note: We are ignoring litho_id_ref for now to prevent schema errors 
-                # if the column doesn't exist. This creates a "Floating Hologram".
-                cur.execute("INSERT INTO node_foundation (hologram_id, catalyst) VALUES (%s::uuid, %s)", (hid, catalyst))
+                # UPDATED: We now insert the lithograph_id (litho_id_ref)
+                # This creates the physical link between the Memory (Chronicles) and the Analysis (Hologram)
+                cur.execute("INSERT INTO node_foundation (hologram_id, catalyst, lithograph_id) VALUES (%s::uuid, %s, %s)", 
+                            (hid, catalyst, litho_id_ref))
+                
                 cur.execute("INSERT INTO node_essence (hologram_id, pathos, mythos) VALUES (%s::uuid, %s::jsonb, %s)", (hid, pathos, mythos))
                 cur.execute("INSERT INTO node_mission (hologram_id, ethos, synthesis) VALUES (%s::uuid, %s, %s)", (hid, ethos, synthesis))
                 cur.execute("INSERT INTO node_data (hologram_id, logos) VALUES (%s::uuid, %s)", (hid, logos))
                 
             conn.commit()
-            log(f"Hologram {hid} committed successfully.")
+            log(f"Hologram {hid} committed successfully (Linked to Litho {litho_id_ref}).")
             return {"status": "SUCCESS", "hologram_id": hid}
 
         except Exception as e:
@@ -253,15 +255,16 @@ class EventModel(BaseModel):
     memory_text: Optional[str] = None
     override_score: Optional[int] = None
 
-# CRITICAL FIX: Root Health Check for DigitalOcean
+# CRITICAL: Root Health Check for DigitalOcean
 @app.get("/")
 def root_health_check():
-    return {"status": "TITAN ONLINE", "mode": "PLATINUM_V1"}
+    return {"status": "TITAN ONLINE", "mode": "PLATINUM_V2_BRIDGED"}
 
 @app.get("/health")
 def health():
     return {"status": "ONLINE"}
 
+# CRITICAL: NO ASYNC on the route to prevent freezing the event loop during blocking Gemini calls
 @app.post("/")
 def handle_request(event: EventModel, background_tasks: BackgroundTasks):
     global TOKEN_DICTIONARY_CACHE
@@ -311,7 +314,7 @@ def handle_request(event: EventModel, background_tasks: BackgroundTasks):
         litho_res = db_manager.commit_lithograph(prev_hash, content_to_save, GEMINI_CLIENT, TOKEN_DICTIONARY_CACHE, event.override_score)
 
         # 3. HOLOGRAPHIC REFRACTION (BACKGROUND TASK)
-        # The user gets the response instantly. The "Soul" processes in the background.
+        # We pass the NEW Litho ID to the background task so it can be linked
         background_tasks.add_task(background_hologram_process, content_to_save, litho_res.get('litho_id'))
         
         litho_res['hologram_status'] = "QUEUED_IN_BACKGROUND"
