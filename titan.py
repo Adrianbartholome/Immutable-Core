@@ -169,6 +169,25 @@ class DBManager:
         finally:
             if conn: conn.close()
 
+    # --- NEW: BATCH DELETE FUNCTION ---
+    def delete_range(self, start_id, end_id):
+        conn = None
+        try:
+            conn = self.connect()
+            with conn.cursor() as cur:
+                cur.execute("UPDATE chronicles SET is_active = FALSE WHERE id BETWEEN %s AND %s RETURNING id;", (start_id, end_id))
+                deleted_rows = cur.fetchall()
+                count = len(deleted_rows)
+            conn.commit()
+            log(f"BATCH DEACTIVATION: IDs {start_id} to {end_id} ({count} records).")
+            return {"status": "SUCCESS", "deleted_count": count}
+        except Exception as e:
+            if conn: conn.rollback()
+            log_error(f"Batch Delete Error: {e}")
+            return {"status": "FAILURE", "error": str(e)}
+        finally:
+            if conn: conn.close()
+
     def search_lithograph(self, query_text, token_cache, limit=5):
         conn = None
         try:
