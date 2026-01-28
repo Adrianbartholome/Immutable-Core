@@ -57,11 +57,26 @@ except Exception as e:
     log_error(f"CRITICAL: Gemini Client failed to init: {e}")
     GEMINI_CLIENT = None
 
-# --- DATABASE MANAGER ---
+# --- UPDATED DATABASE SECTION FOR TITAN.PY ---
+
 def get_db_connection_string():
+    # 1. Get the raw hostname
+    host = os.environ.get("DB_HOST")
+    
+    # 2. FORCE IPv4 RESOLUTION
+    # This manually looks up the numeric IP (e.g., 54.123.45.67)
+    # forcing the driver to use the old, reliable IPv4 network.
+    try:
+        ipv4_address = socket.gethostbyname(host)
+        log(f"DNS RESOLVED: {host} -> {ipv4_address}")
+    except Exception as e:
+        log_error(f"DNS FAILURE: Could not resolve {host}. Error: {e}")
+        ipv4_address = host # Fallback to hostname if lookup fails
+        
     password = urllib.parse.quote_plus(os.environ.get("DB_PASSWORD", ""))
-    # Keep port 5432 (Session Mode) but now forcing IPv4
-    return f"postgresql://{os.environ.get('DB_USER')}:{password}@{os.environ.get('DB_HOST')}:{os.environ.get('DB_PORT', '5432')}/{os.environ.get('DB_NAME')}?sslmode=require"
+    
+    # 3. Construct URL with the IP address, not the hostname
+    return f"postgresql://{os.environ.get('DB_USER')}:{password}@{ipv4_address}:{os.environ.get('DB_PORT', '5432')}/{os.environ.get('DB_NAME')}?sslmode=require"
 
 class DBManager:
     def __init__(self):
