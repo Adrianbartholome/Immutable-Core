@@ -356,5 +356,79 @@ def handle_request():
     response = application_logic(event)
     return response.get('body'), response.get('statusCode'), {'Content-Type': 'application/json'}
 
+# --- DEBUG ROUTE (Add this to the bottom of validation_engine.py) ---
+
+@app.route('/debug/db', methods=['GET'])
+def debug_database():
+    import uuid
+    import json
+    
+    # 1. Setup Data
+    hid = str(uuid.uuid4())
+    results = []
+    errors = []
+    
+    db = DBManager()
+    conn = db.connect()
+    # Turn ON Auto-Commit for Debugging (This isolates each insert)
+    conn.autocommit = True 
+    
+    try:
+        with conn.cursor() as cur:
+            # TEST 1: Foundation
+            try:
+                cur.execute(
+                    "INSERT INTO node_foundation (hologram_id, catalyst) VALUES (%s::uuid, %s)", 
+                    (hid, "DEBUG_PROBE_CATALYST")
+                )
+                results.append(f"✅ Foundation: Success (ID: {hid})")
+            except Exception as e:
+                errors.append(f"❌ Foundation Failed: {str(e)}")
+
+            # TEST 2: Essence (The likely crash site)
+            try:
+                # Testing strict JSONB casting
+                test_json = json.dumps({"status": "debug_ok"})
+                cur.execute(
+                    "INSERT INTO node_essence (hologram_id, pathos, mythos) VALUES (%s::uuid, %s::jsonb, %s)", 
+                    (hid, test_json, "DEBUG_MYTHOS")
+                )
+                results.append("✅ Essence: Success")
+            except Exception as e:
+                errors.append(f"❌ Essence Failed: {str(e)}")
+
+            # TEST 3: Mission
+            try:
+                cur.execute(
+                    "INSERT INTO node_mission (hologram_id, ethos, synthesis) VALUES (%s::uuid, %s, %s)", 
+                    (hid, "DEBUG_ETHOS", "DEBUG_SYNTHESIS")
+                )
+                results.append("✅ Mission: Success")
+            except Exception as e:
+                errors.append(f"❌ Mission Failed: {str(e)}")
+
+            # TEST 4: Data
+            try:
+                cur.execute(
+                    "INSERT INTO node_data (hologram_id, logos) VALUES (%s::uuid, %s)", 
+                    (hid, "DEBUG_LOGOS_TEXT")
+                )
+                results.append("✅ Data: Success")
+            except Exception as e:
+                errors.append(f"❌ Data Failed: {str(e)}")
+
+    except Exception as outer_e:
+        errors.append(f"🔥 CRITICAL DB CONNECTION FAIL: {str(outer_e)}")
+    finally:
+        db.close()
+
+    # Return the report to the browser
+    return jsonify({
+        "status": "DEBUG_COMPLETE",
+        "hologram_id": hid,
+        "results": results,
+        "errors": errors
+    })
+
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
