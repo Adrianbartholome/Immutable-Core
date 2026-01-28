@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from typing import Optional
 
 # --- APP INITIALIZATION ---
-app = FastAPI(title="Aether Titan Core (Platinum V2)")
+app = FastAPI(title="Aether Titan Core (Platinum V3 - Pruning)")
 
 app.add_middleware(
     CORSMiddleware,
@@ -98,7 +98,6 @@ def encode_memory(raw_text, token_map):
 # --- DATABASE MANAGER (POOLER OPTIMIZED) ---
 def get_db_connection_string():
     password = urllib.parse.quote_plus(os.environ.get("DB_PASSWORD", ""))
-    # Force Port 6543 for Transaction Pooler
     return f"postgresql://{os.environ.get('DB_USER')}:{password}@{os.environ.get('DB_HOST')}:{os.environ.get('DB_PORT', '6543')}/{os.environ.get('DB_NAME')}?sslmode=require"
 
 class DBManager:
@@ -131,13 +130,13 @@ class DBManager:
             if manual_score: 
                 score = int(manual_score)
             
-            # Connect strictly for the write operation
             conn = self.connect()
             now = datetime.now()
             current_hash = generate_hash({"timestamp": now, "weighted_score": score, "memory_text": compressed}, previous_hash)
             
             with conn.cursor() as cur:
-                cur.execute("INSERT INTO chronicles (weighted_score, created_at, memory_text, previous_hash, current_hash) VALUES (%s, %s, %s, %s, %s) RETURNING id;", 
+                # Ensuring is_active defaults to TRUE
+                cur.execute("INSERT INTO chronicles (weighted_score, created_at, memory_text, previous_hash, current_hash, is_active) VALUES (%s, %s, %s, %s, %s, TRUE) RETURNING id;", 
                             (score, now, compressed, previous_hash, current_hash))
                 new_id = cur.fetchone()[0]
             conn.commit()
@@ -150,12 +149,33 @@ class DBManager:
         finally:
             if conn: conn.close()
 
+    # --- NEW: DELETE FUNCTION (Soft Delete) ---
+    def delete_lithograph(self, target_id):
+        conn = None
+        try:
+            conn = self.connect()
+            with conn.cursor() as cur:
+                cur.execute("UPDATE chronicles SET is_active = FALSE WHERE id = %s RETURNING id;", (target_id,))
+                if cur.rowcount == 0:
+                    return {"status": "FAILURE", "error": "ID not found"}
+                deleted_id = cur.fetchone()[0]
+            conn.commit()
+            log(f"Lithograph {deleted_id} DEACTIVATED.")
+            return {"status": "SUCCESS", "deleted_id": deleted_id}
+        except Exception as e:
+            if conn: conn.rollback()
+            log_error(f"Delete Error: {e}")
+            return {"status": "FAILURE", "error": str(e)}
+        finally:
+            if conn: conn.close()
+
     def search_lithograph(self, query_text, token_cache, limit=5):
         conn = None
         try:
             compressed_query = encode_memory(query_text, token_cache)
             conn = self.connect()
             with conn.cursor() as cur:
+                # Query now explicitly respects is_active
                 cur.execute("""
                     SELECT id, weighted_score, memory_text, created_at 
                     FROM chronicles 
@@ -179,7 +199,7 @@ class DBManager:
         finally:
             if conn: conn.close()
 
-# --- HOLOGRAPHIC MANAGER (UPDATED: BRIDGED) ---
+# --- HOLOGRAPHIC MANAGER ---
 class HolographicManager:
     def __init__(self):
         self.db = DBManager()
@@ -197,11 +217,8 @@ class HolographicManager:
             logos = packet.get('logos') or "Raw Data Artifact"
 
             with conn.cursor() as cur:
-                # UPDATED: We now insert the lithograph_id (litho_id_ref)
-                # This creates the physical link between the Memory (Chronicles) and the Analysis (Hologram)
                 cur.execute("INSERT INTO node_foundation (hologram_id, catalyst, lithograph_id) VALUES (%s::uuid, %s, %s)", 
                             (hid, catalyst, litho_id_ref))
-                
                 cur.execute("INSERT INTO node_essence (hologram_id, pathos, mythos) VALUES (%s::uuid, %s::jsonb, %s)", (hid, pathos, mythos))
                 cur.execute("INSERT INTO node_mission (hologram_id, ethos, synthesis) VALUES (%s::uuid, %s, %s)", (hid, ethos, synthesis))
                 cur.execute("INSERT INTO node_data (hologram_id, logos) VALUES (%s::uuid, %s)", (hid, logos))
@@ -217,7 +234,7 @@ class HolographicManager:
         finally:
             if conn: conn.close()
 
-# --- BACKGROUND WORKER (The Recorder) ---
+# --- BACKGROUND WORKER ---
 def background_hologram_process(content_to_save: str, litho_id: int):
     log(f"Starting Background Refraction for Litho ID: {litho_id}")
     try:
@@ -225,7 +242,6 @@ def background_hologram_process(content_to_save: str, litho_id: int):
             log_error("Gemini Client missing in background.")
             return
 
-        # 1. Refract (Gemini) - PHASE 1 (No DB Connection)
         refraction = GEMINI_CLIENT.models.generate_content(
             model='gemini-2.5-flash',
             contents=[REFRACTOR_SYSTEM_PROMPT + f"\n\nINPUT DATA TO REFRACT:\n{content_to_save}"],
@@ -240,7 +256,6 @@ def background_hologram_process(content_to_save: str, litho_id: int):
 
         packet = json.loads(raw_text)
         
-        # 2. Commit (DB) - PHASE 2 (Quick Connect/Disconnect)
         holo_manager = HolographicManager()
         holo_manager.commit_hologram(packet, litho_id)
         
@@ -254,41 +269,44 @@ class EventModel(BaseModel):
     commit_type: Optional[str] = 'memory'
     memory_text: Optional[str] = None
     override_score: Optional[int] = None
+    target_id: Optional[int] = None # Added for Deletion
 
-# CRITICAL: Root Health Check for DigitalOcean
 @app.get("/")
 def root_health_check():
-    return {"status": "TITAN ONLINE", "mode": "PLATINUM_V2_BRIDGED"}
+    return {"status": "TITAN ONLINE", "mode": "PLATINUM_V3_PRUNING"}
 
 @app.get("/health")
 def health():
     return {"status": "ONLINE"}
 
-# CRITICAL: NO ASYNC on the route to prevent freezing the event loop during blocking Gemini calls
 @app.post("/")
 def handle_request(event: EventModel, background_tasks: BackgroundTasks):
     global TOKEN_DICTIONARY_CACHE
     db_manager = DBManager()
     
-    # Lazy load cache
     if not TOKEN_DICTIONARY_CACHE:
         try:
             TOKEN_DICTIONARY_CACHE = db_manager.load_token_cache()
         except: pass
 
     try:
-        # 1. RETRIEVE
+        # 1. DELETE ACTION (New)
+        if event.action == 'delete':
+            if not event.target_id: return {"error": "Target ID required for deletion"}
+            log(f"Processing Deletion for ID: {event.target_id}")
+            return db_manager.delete_lithograph(event.target_id)
+
+        # 2. RETRIEVE
         if event.action == 'retrieve':
             if not event.query: return {"error": "No query"}
             results = db_manager.search_lithograph(event.query, TOKEN_DICTIONARY_CACHE)
             return {"status": "SUCCESS", "results": results}
 
-        # 2. COMMIT
+        # 3. COMMIT
         if not event.memory_text: return {"status": "HEARTBEAT"}
 
         log(f"Processing Commit: {event.commit_type}")
 
-        # Summarization (Sync - Server Side)
         content_to_save = event.memory_text
         if event.commit_type == 'summary' and GEMINI_CLIENT:
             try:
@@ -299,10 +317,8 @@ def handle_request(event: EventModel, background_tasks: BackgroundTasks):
                 content_to_save = summary_res.text
             except: pass 
 
-        # Lithographic Commit (Synchronous - Bedrock)
         prev_hash = ''
         try:
-            # Quick check for hash chain
             conn = db_manager.connect()
             with conn.cursor() as cur:
                 cur.execute("SELECT current_hash FROM chronicles ORDER BY id DESC LIMIT 1;")
@@ -313,8 +329,6 @@ def handle_request(event: EventModel, background_tasks: BackgroundTasks):
             
         litho_res = db_manager.commit_lithograph(prev_hash, content_to_save, GEMINI_CLIENT, TOKEN_DICTIONARY_CACHE, event.override_score)
 
-        # 3. HOLOGRAPHIC REFRACTION (BACKGROUND TASK)
-        # We pass the NEW Litho ID to the background task so it can be linked
         background_tasks.add_task(background_hologram_process, content_to_save, litho_res.get('litho_id'))
         
         litho_res['hologram_status'] = "QUEUED_IN_BACKGROUND"
