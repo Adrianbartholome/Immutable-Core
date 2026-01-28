@@ -182,9 +182,14 @@ class HolographicManager:
         pass
 
     async def commit_hologram(self, packet, litho_id_ref=None):
+        # Generate ID
         hid = str(uuid.uuid4())
         
-        # Create a FRESH connection for this async context
+        # --- DEBUG LOGGING (Check DigitalOcean Logs for this!) ---
+        print(f"TITAN DEBUG: Attempting to write Hologram ID: {hid}", flush=True)
+        print(f"TITAN DEBUG: Packet Data: {json.dumps(packet)}", flush=True)
+
+        # Create connection
         local_db = DBManager()
         
         try:
@@ -199,18 +204,39 @@ class HolographicManager:
             logos = packet.get('logos') or "Raw Data Artifact"
 
             with conn.cursor() as cur:
-                cur.execute("INSERT INTO node_foundation (hologram_id, catalyst) VALUES (%s, %s)", (hid, catalyst))
-                cur.execute("INSERT INTO node_essence (hologram_id, pathos, mythos) VALUES (%s, %s, %s)", (hid, pathos, mythos))
-                cur.execute("INSERT INTO node_mission (hologram_id, ethos, synthesis) VALUES (%s, %s, %s)", (hid, ethos, synthesis))
-                cur.execute("INSERT INTO node_data (hologram_id, logos) VALUES (%s, %s)", (hid, logos))
+                # 1. THE REAL WRITE (With explicit UUID casting)
+                cur.execute(
+                    "INSERT INTO node_foundation (hologram_id, catalyst) VALUES (%s::uuid, %s)", 
+                    (hid, catalyst)
+                )
+                cur.execute(
+                    "INSERT INTO node_essence (hologram_id, pathos, mythos) VALUES (%s::uuid, %s, %s)", 
+                    (hid, pathos, mythos)
+                )
+                cur.execute(
+                    "INSERT INTO node_mission (hologram_id, ethos, synthesis) VALUES (%s::uuid, %s, %s)", 
+                    (hid, ethos, synthesis)
+                )
+                cur.execute(
+                    "INSERT INTO node_data (hologram_id, logos) VALUES (%s::uuid, %s)", 
+                    (hid, logos)
+                )
+                
+                # 2. THE HARDCODED TEST (To verify Python connectivity)
+                test_id = str(uuid.uuid4())
+                cur.execute(
+                    "INSERT INTO node_data (hologram_id, logos) VALUES (%s::uuid, %s)", 
+                    (test_id, "PYTHON CONNECTION PROBE - IF YOU SEE THIS, PYTHON IS WORKING")
+                )
+
             conn.commit()
-            print(f"TITAN LOG: Hologram {hid} committed successfully (ASYNC).")
+            print(f"TITAN LOG: COMMIT EXECUTION FINISHED for {hid}", flush=True)
             return {"status": "SUCCESS", "hologram_id": hid}
+
         except Exception as e:
             if local_db.connection: local_db.connection.rollback()
-            # Capture full traceback
             error_details = traceback.format_exc()
-            print(f"TITAN ERROR (Hologram Reject): {error_details}") 
+            print(f"TITAN ERROR (Hologram Reject): {error_details}", flush=True) 
             return {"status": "FAILURE", "error": str(e), "details": error_details}
         finally:
             local_db.close()
