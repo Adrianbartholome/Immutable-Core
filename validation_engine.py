@@ -209,7 +209,7 @@ class HolographicManager:
         finally:
             if conn: conn.close()
 
-# --- LOGIC ROUTER ---
+# --- LOGIC ROUTER --- so logical
 
 def application_logic(event):
     global TOKEN_DICTIONARY_CACHE
@@ -307,6 +307,6 @@ def handle_request():
     event = request.get_json(silent=True) or {}
     response = application_logic(event)
     return response.get('body'), response.get('statusCode'), {'Content-Type': 'application/json'}
-
+ 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
