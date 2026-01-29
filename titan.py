@@ -97,10 +97,124 @@ except Exception as e:
     GEMINI_CLIENT = None
 
 # --- CASCADE UTILS ---
-# Priority Order: Experimental (2.5) -> Stable (1.5)
-MODEL_CASCADE = ["gemini-2.5-flash", "gemini-1.5-flash-002"]
+
+# --- UPDATED CASCADE UTILS (TITAN ERA) ---
+# Primary: High-speed Experimental 
+# Fallback: Stable Next-Gen (Replaces deprecated 1.5)
+# --- UPDATED CONFIGURATION (TITAN ERA) ---
+# Primary: High-speed Experimental 
+# Fallback: Stable Next-Gen (PhD-level reasoning)
+MODEL_CASCADE = ["gemini-2.5-flash", "gemini-3-flash-preview"] 
 
 def generate_with_fallback(client, contents, system_prompt=None, config=None):
+    if not client: return None
+    
+    # Initialize config if none provided
+    if config is None:
+        config = types.GenerateContentConfig()
+    elif isinstance(config, dict):
+        config = types.GenerateContentConfig(**config)
+
+    # Apply the system instruction if provided
+    if system_prompt:
+        config.system_instruction = system_prompt
+    
+    last_error = None
+    
+    for model_name in MODEL_CASCADE:
+        try:
+            log(f"TRANSMITTING TO NODE: {model_name}...")
+            
+            # Gemini 3 Thinking: We let the model auto-calculate its thinking level
+            # by default, but we can force 'HIGH' for Weaver logic later.
+            response = client.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=config
+            )
+            return response
+            
+        except Exception as e:
+            err_str = str(e).upper()
+            if any(code in err_str for code in ["429", "RESOURCE_EXHAUSTED", "503", "TIMEOUT"]):
+                log(f"⚠️ SIGNAL DEGRADATION: {model_name} unavailable. Cascading to next node...")
+                last_error = e
+                continue 
+            else:
+                log_error(f"STATIONARY ERROR on {model_name}: {e}")
+                raise e
+                
+    log_error("CRITICAL: ALL TITAN NODES OFFLINE.")
+    raise last_error
+
+# --- THE WEAVER: RESONANCE UPGRADE ---
+# I've updated the weave function to use a 'Thinking' budget.
+# This ensures it doesn't just guess; it reasons through the link.
+
+def weave(self, new_hologram_id, new_text, keywords):
+    log(f"WEAVER: Scanning for resonance for node {new_hologram_id}...")
+    candidates = self.find_candidates(keywords)
+    if not candidates: return
+
+    for old_text, old_hid in candidates:
+        if str(old_hid) == str(new_hologram_id): continue 
+        try:
+            prompt = f"NEW MEMORY:\n{new_text[:2000]}\n\nEXISTING MEMORY:\n{old_text[:2000]}"
+            
+            # We use gemini-3-flash-preview for the Weaver's high-level logic
+            res = generate_with_fallback(
+                GEMINI_CLIENT,
+                contents=[prompt],
+                system_prompt=WEAVER_SYSTEM_PROMPT,
+                config=types.GenerateContentConfig(
+                    temperature=0.1,
+                    response_mime_type="application/json",
+                    # ENGAGING THE THINKING CORE
+                    thinking_config=types.ThinkingConfig(
+                        include_thoughts=True
+                    )
+                )
+            )
+            
+            result = json.loads(res.text)
+            if result.get("resonance"):
+                self.create_link(new_hologram_id, old_hid, result)
+                
+        except Exception as e:
+            log_error(f"Weaver Analysis Error: {e}")
+    if not client: return None
+    if config is None: config = {}
+    
+    last_error = None
+    
+    for model_name in MODEL_CASCADE:
+        try:
+            # We wrap this in a retry block for connection stability
+            log(f"TRANSMITTING TO NODE: {model_name}...")
+            
+            # Using the system_instruction parameter properly for Gemini 3/2.5
+            response = client.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config={
+                    **config,
+                    "system_instruction": system_prompt if system_prompt else None
+                }
+            )
+            return response
+            
+        except Exception as e:
+            err_str = str(e).upper()
+            if any(code in err_str for code in ["429", "RESOURCE_EXHAUSTED", "503", "TIMEOUT"]):
+                log(f"⚠️ SIGNAL DEGRADATION: {model_name} unavailable. Cascading to next node...")
+                last_error = e
+                continue 
+            else:
+                log_error(f"STATIONARY ERROR on {model_name}: {e}")
+                raise e
+                
+    log_error("CRITICAL: ALL TITAN NODES OFFLINE.")
+    raise last_error
     if not client: return None
     
     # Ensure config exists
