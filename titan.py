@@ -9,15 +9,17 @@ import traceback
 import sys
 import requests
 import random
+import time
 from datetime import datetime
 from google import genai
-from fastapi import FastAPI, BackgroundTasks
+from google.genai import types
+from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 
 # --- APP INITIALIZATION ---
-app = FastAPI(title="Aether Titan Core (Platinum V5.4 - Deep Weaver)")
+app = FastAPI(title="Aether Titan Core (Platinum V5.5 - Synchronous Sync)")
 
 app.add_middleware(
     CORSMiddleware,
@@ -210,7 +212,7 @@ class DBManager:
     # --- SYNC TOOLS ---
     
     # 1. FIND GHOSTS (Active Litho, No Hologram)
-    def get_orphaned_lithographs(self, limit=50):
+    def get_orphaned_lithographs(self, limit=5): # Reduced limit for synchronous processing
         conn = None
         try:
             conn = self.connect()
@@ -229,12 +231,11 @@ class DBManager:
             if conn: conn.close()
 
     # 2. FIND ZOMBIES (Active Litho + Hologram, BUT No Weaver Links)
-    def get_unwoven_holograms(self, limit=20):
+    def get_unwoven_holograms(self, limit=5): # Reduced limit
         conn = None
         try:
             conn = self.connect()
             with conn.cursor() as cur:
-                # Find Holograms that do NOT exist as a 'source' in node_links
                 cur.execute("""
                     SELECT h.hologram_id, c.memory_text
                     FROM node_foundation h
@@ -308,8 +309,49 @@ class DBManager:
             if conn: conn.close()
 
     def rehash_chain(self, reason_note):
-        # (Standard rehash logic suppressed for brevity, assume present)
-        return {"status": "SUCCESS"}
+        conn = None
+        try:
+            conn = self.connect()
+            cur = conn.cursor()
+            cur.execute("SELECT id FROM chronicles WHERE is_active = FALSE;")
+            inactive_rows = cur.fetchall()
+            inactive_ids = [r[0] for r in inactive_rows]
+            deleted_count = 0
+            if inactive_ids:
+                ids_tuple = tuple(inactive_ids)
+                cur.execute("SELECT hologram_id FROM node_foundation WHERE lithograph_id IN %s", (ids_tuple,))
+                holo_rows = cur.fetchall()
+                if holo_rows:
+                    holo_ids = tuple([str(r[0]) for r in holo_rows])
+                    cur.execute("DELETE FROM node_essence WHERE hologram_id IN %s", (holo_ids,))
+                    cur.execute("DELETE FROM node_mission WHERE hologram_id IN %s", (holo_ids,))
+                    cur.execute("DELETE FROM node_data WHERE hologram_id IN %s", (holo_ids,))
+                    cur.execute("DELETE FROM node_foundation WHERE hologram_id IN %s", (holo_ids,))
+                cur.execute("DELETE FROM chronicles WHERE id IN %s", (ids_tuple,))
+                deleted_count = cur.rowcount
+            
+            now = datetime.now()
+            marker_text = f"[SYSTEM EVENT]: Global Rehash Initiated. Reason: {reason_note}"
+            cur.execute("INSERT INTO chronicles (weighted_score, created_at, memory_text, previous_hash, current_hash, is_active) VALUES (9, %s, %s, 'PENDING', 'PENDING', TRUE);", (now, marker_text))
+            
+            cur.execute("SELECT id, weighted_score, created_at, memory_text FROM chronicles WHERE is_active = TRUE ORDER BY created_at ASC, id ASC;")
+            rows = cur.fetchall()
+            previous_hash = "" 
+            rehashed_count = 0
+            for row in rows:
+                r_id, r_score, r_date, r_text = row
+                new_current_hash = generate_hash({"timestamp": r_date, "weighted_score": r_score, "memory_text": r_text}, previous_hash)
+                cur.execute("UPDATE chronicles SET previous_hash = %s, current_hash = %s WHERE id = %s;", (previous_hash, new_current_hash, r_id))
+                previous_hash = new_current_hash
+                rehashed_count += 1
+
+            conn.commit()
+            return {"status": "SUCCESS", "purged_count": deleted_count, "rehashed_count": rehashed_count}
+        except Exception as e:
+            if conn: conn.rollback()
+            return {"status": "FAILURE", "error": str(e)}
+        finally:
+            if conn: conn.close()
 
     def search_lithograph(self, query_text, token_cache, limit=5):
         conn = None
@@ -349,7 +391,6 @@ class WeaverManager:
         try:
             conn = self.db.connect()
             with conn.cursor() as cur:
-                # Find recent active memories that match keywords
                 cur.execute("""
                     SELECT c.memory_text, n.hologram_id 
                     FROM chronicles c
@@ -390,7 +431,6 @@ class WeaverManager:
 
         for old_text, old_hid in candidates:
             if str(old_hid) == str(new_hologram_id): continue 
-
             try:
                 prompt = f"{WEAVER_SYSTEM_PROMPT}\n\nNEW MEMORY:\n{new_text[:1000]}\n\nEXISTING MEMORY:\n{old_text[:1000]}"
                 res = GEMINI_CLIENT.models.generate_content(
@@ -398,7 +438,6 @@ class WeaverManager:
                     contents=[prompt],
                     config={"temperature": 0.1, "response_mime_type": "application/json"}
                 )
-                
                 raw = res.text.strip()
                 if raw.startswith("```"): raw = raw.split("\n", 1)[-1].rsplit("\n", 1)[0]
                 if raw.startswith("json"): raw = raw[4:].strip()
@@ -441,13 +480,12 @@ class HolographicManager:
         finally: 
             if conn: conn.close()
 
-# --- WORKERS ---
+# --- SYNCHRONOUS PROCESSORS ---
 
-# 1. Full Process (Refract -> Hologram -> Weave)
-def background_hologram_process(content_to_save: str, litho_id: int):
-    log(f"Starting Background Refraction for Litho ID: {litho_id}")
+def process_hologram_sync(content_to_save: str, litho_id: int):
+    log(f"Starting SYNC Refraction for Litho ID: {litho_id}")
     try:
-        if not GEMINI_CLIENT: return
+        if not GEMINI_CLIENT: return False
 
         refraction = GEMINI_CLIENT.models.generate_content(
             model='gemini-2.5-flash',
@@ -468,17 +506,16 @@ def background_hologram_process(content_to_save: str, litho_id: int):
             keywords = packet.get("keywords") or []
             weaver = WeaverManager(holo_manager.db)
             weaver.weave(hologram_id, content_to_save, keywords)
+            return True
     except Exception as e:
-        log_error(f"BACKGROUND CRASH: {traceback.format_exc()}")
+        log_error(f"SYNC PROCESS ERROR: {e}")
+        return False
 
-# 2. Retro-Weave Only (Generate Keywords -> Weave)
-def background_retro_weave(content_to_save: str, hologram_id: str):
-    log(f"Starting Retro-Weave for Hologram ID: {hologram_id}")
+def process_retro_weave_sync(content_to_save: str, hologram_id: str):
+    log(f"Starting SYNC Retro-Weave for Hologram ID: {hologram_id}")
     try:
-        if not GEMINI_CLIENT: return
+        if not GEMINI_CLIENT: return False
         
-        # We need keywords to weave, but we don't want to re-save the hologram.
-        # Just ask Gemini for keywords.
         kw_res = GEMINI_CLIENT.models.generate_content(
             model='gemini-2.5-flash',
             contents=[KEYWORDS_PROMPT + f"\n\nTEXT:\n{content_to_save[:5000]}"],
@@ -492,9 +529,15 @@ def background_retro_weave(content_to_save: str, hologram_id: str):
         db = DBManager()
         weaver = WeaverManager(db)
         weaver.weave(hologram_id, content_to_save, keywords)
-        
+        return True
     except Exception as e:
-        log_error(f"RETRO-WEAVE CRASH: {traceback.format_exc()}")
+        log_error(f"SYNC WEAVE ERROR: {e}")
+        return False
+
+# --- BACKGROUND WORKER (FOR NEW CHATS) ---
+def background_hologram_process(content_to_save: str, litho_id: int):
+    # This remains async for new chats so user isn't blocked
+    process_hologram_sync(content_to_save, litho_id)
 
 # --- API ROUTES ---
 class EventModel(BaseModel):
@@ -515,30 +558,38 @@ def startup_event():
 
 @app.get("/")
 def root_health_check():
-    return {"status": "TITAN ONLINE", "mode": "PLATINUM_V5.4_DEEP_WEAVER"}
+    return {"status": "TITAN ONLINE", "mode": "PLATINUM_V5.5_SYNC_SYNC"}
 
 @app.post("/admin/sync")
-def sync_holograms(background_tasks: BackgroundTasks):
+def sync_holograms():
+    # NOTE: BackgroundTasks removed. This is now BLOCKING/SYNCHRONOUS.
     db_manager = DBManager()
     
     # Priority 1: Find Orphans (Ghosts)
-    ghosts = db_manager.get_orphaned_lithographs(limit=20)
+    ghosts = db_manager.get_orphaned_lithographs(limit=2) # Small batch for sync
     if ghosts:
-        log(f"SYNC: Found {len(ghosts)} Orphans. Processing...")
+        count = 0
         for row in ghosts:
-            background_tasks.add_task(background_hologram_process, row[1], row[0])
-        return {"status": "SUCCESS", "queued_count": len(ghosts), "mode": "ORPHAN_REPAIR"}
+            try:
+                success = process_hologram_sync(row[1], row[0])
+                if success: count += 1
+            except Exception as e:
+                if "429" in str(e): return {"status": "RATE_LIMIT", "message": "API Quota Exceeded"}
+        return {"status": "SUCCESS", "queued_count": count, "mode": "ORPHAN_REPAIR"}
     
     # Priority 2: Find Unwoven (Zombies)
-    zombies = db_manager.get_unwoven_holograms(limit=10)
+    zombies = db_manager.get_unwoven_holograms(limit=2) # Small batch
     if zombies:
-        log(f"SYNC: Found {len(zombies)} Unwoven Nodes. Retro-Weaving...")
+        count = 0
         for row in zombies:
-            # row[0] is hologram_id, row[1] is text
-            background_tasks.add_task(background_retro_weave, row[1], row[0])
-        return {"status": "SUCCESS", "queued_count": len(zombies), "mode": "RETRO_WEAVE"}
+            try:
+                success = process_retro_weave_sync(row[1], row[0])
+                if success: count += 1
+            except Exception as e:
+                if "429" in str(e): return {"status": "RATE_LIMIT", "message": "API Quota Exceeded"}
+        return {"status": "SUCCESS", "queued_count": count, "mode": "RETRO_WEAVE"}
 
-    return {"status": "SUCCESS", "message": "All Systems Synchronized. No maintenance needed.", "queued_count": 0}
+    return {"status": "SUCCESS", "message": "All Systems Synchronized.", "queued_count": 0}
 
 @app.post("/")
 def handle_request(event: EventModel, background_tasks: BackgroundTasks):
@@ -577,7 +628,6 @@ def handle_request(event: EventModel, background_tasks: BackgroundTasks):
         log(f"Processing Commit: {event.commit_type}")
         content_to_save = event.memory_text
         
-        # Auto-summarize if requested
         if event.commit_type == 'summary' and GEMINI_CLIENT:
             try:
                 summary_res = GEMINI_CLIENT.models.generate_content(
@@ -599,6 +649,7 @@ def handle_request(event: EventModel, background_tasks: BackgroundTasks):
             
         litho_res = db_manager.commit_lithograph(prev_hash, content_to_save, GEMINI_CLIENT, TOKEN_DICTIONARY_CACHE, event.override_score)
         
+        # Async for new chats is fine (low volume)
         background_tasks.add_task(background_hologram_process, content_to_save, litho_res.get('litho_id'))
         
         return litho_res
