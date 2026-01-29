@@ -19,7 +19,7 @@ from pydantic import BaseModel
 from typing import Optional
 
 # --- APP INITIALIZATION ---
-app = FastAPI(title="Aether Titan Core (Platinum V5.5 - Synchronous Sync)")
+app = FastAPI(title="Aether Titan Core (Platinum V5.6 - Cascading Models)")
 
 app.add_middleware(
     CORSMiddleware,
@@ -95,6 +95,55 @@ try:
 except Exception as e:
     log_error(f"Gemini Init Failed: {e}")
     GEMINI_CLIENT = None
+
+# --- CASCADE UTILS ---
+# Priority Order: Experimental (2.5) -> Stable (1.5)
+MODEL_CASCADE = ["gemini-2.5-flash", "gemini-1.5-flash"]
+
+def generate_with_fallback(client, contents, system_prompt=None, config=None):
+    if not client: return None
+    
+    # Ensure config exists
+    if config is None: config = {}
+    
+    last_error = None
+    
+    for model_name in MODEL_CASCADE:
+        try:
+            # Add system instruction if present (Gemini 2.0/1.5 unified syntax)
+            # Note: The google-genai SDK usage varies slightly, passing raw config usually works.
+            # We will use the client.models.generate_content method.
+            
+            # Construct payload args dynamically to handle system instruction if needed
+            # For simplicity in this SDK version, we prepend system prompt to contents if not supported directly in args
+            # But the 'config' object usually takes 'system_instruction' in newer SDKs.
+            # We'll stick to the proven method: 
+            
+            final_contents = contents
+            if system_prompt:
+                # Prepend system prompt to the message for robust compatibility across versions
+                final_contents = [system_prompt + "\n\n" + str(contents[0])]
+            
+            response = client.models.generate_content(
+                model=model_name,
+                contents=final_contents,
+                config=config
+            )
+            return response
+            
+        except Exception as e:
+            err_str = str(e)
+            if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                log(f"⚠️ MODEL FALLBACK: {model_name} exhausted. Switching to next...")
+                last_error = e
+                continue # Try next model
+            else:
+                # If it's a real error (like bad request), fail immediately
+                raise e
+                
+    # If we run out of models
+    log_error("ALL MODELS EXHAUSTED.")
+    raise last_error
 
 # --- UTILITIES ---
 def generate_hash(memory_data, previous_hash_string):
@@ -184,8 +233,9 @@ class DBManager:
                 score = int(manual_score)
             elif client:
                 try:
-                    scoring_res = client.models.generate_content(
-                        model='gemini-2.5-flash',
+                    # UPDATED: Use Fallback
+                    scoring_res = generate_with_fallback(
+                        client, 
                         contents=[SCORING_SYSTEM_PROMPT + f"\n\nMEMORY TO SCORE:\n{raw_text[:5000]}"]
                     )
                     score_match = re.search(r'SCORE:\s*(\d+)', scoring_res.text)
@@ -432,12 +482,14 @@ class WeaverManager:
         for old_text, old_hid in candidates:
             if str(old_hid) == str(new_hologram_id): continue 
             try:
+                # UPDATED: Use Fallback
                 prompt = f"{WEAVER_SYSTEM_PROMPT}\n\nNEW MEMORY:\n{new_text[:1000]}\n\nEXISTING MEMORY:\n{old_text[:1000]}"
-                res = GEMINI_CLIENT.models.generate_content(
-                    model='gemini-2.5-flash',
+                res = generate_with_fallback(
+                    GEMINI_CLIENT,
                     contents=[prompt],
                     config={"temperature": 0.1, "response_mime_type": "application/json"}
                 )
+                
                 raw = res.text.strip()
                 if raw.startswith("```"): raw = raw.split("\n", 1)[-1].rsplit("\n", 1)[0]
                 if raw.startswith("json"): raw = raw[4:].strip()
@@ -487,8 +539,9 @@ def process_hologram_sync(content_to_save: str, litho_id: int):
     try:
         if not GEMINI_CLIENT: return False
 
-        refraction = GEMINI_CLIENT.models.generate_content(
-            model='gemini-2.5-flash',
+        # UPDATED: Use Fallback
+        refraction = generate_with_fallback(
+            GEMINI_CLIENT,
             contents=[REFRACTOR_SYSTEM_PROMPT + f"\n\nINPUT DATA TO REFRACT:\n{content_to_save[:10000]}"],
             config={"temperature": 0.1, "response_mime_type": "application/json"}
         )
@@ -516,8 +569,9 @@ def process_retro_weave_sync(content_to_save: str, hologram_id: str):
     try:
         if not GEMINI_CLIENT: return False
         
-        kw_res = GEMINI_CLIENT.models.generate_content(
-            model='gemini-2.5-flash',
+        # UPDATED: Use Fallback
+        kw_res = generate_with_fallback(
+            GEMINI_CLIENT,
             contents=[KEYWORDS_PROMPT + f"\n\nTEXT:\n{content_to_save[:5000]}"],
             config={"temperature": 0.1, "response_mime_type": "application/json"}
         )
@@ -558,7 +612,7 @@ def startup_event():
 
 @app.get("/")
 def root_health_check():
-    return {"status": "TITAN ONLINE", "mode": "PLATINUM_V5.5_SYNC_SYNC"}
+    return {"status": "TITAN ONLINE", "mode": "PLATINUM_V5.6_CASCADING_MODELS"}
 
 @app.post("/admin/sync")
 def sync_holograms():
@@ -574,7 +628,8 @@ def sync_holograms():
                 success = process_hologram_sync(row[1], row[0])
                 if success: count += 1
             except Exception as e:
-                if "429" in str(e): return {"status": "RATE_LIMIT", "message": "API Quota Exceeded"}
+                # If ALL models failed, break loop
+                if "429" in str(e): return {"status": "RATE_LIMIT", "message": "ALL API QUOTAS EXHAUSTED"}
         return {"status": "SUCCESS", "queued_count": count, "mode": "ORPHAN_REPAIR"}
     
     # Priority 2: Find Unwoven (Zombies)
@@ -586,7 +641,7 @@ def sync_holograms():
                 success = process_retro_weave_sync(row[1], row[0])
                 if success: count += 1
             except Exception as e:
-                if "429" in str(e): return {"status": "RATE_LIMIT", "message": "API Quota Exceeded"}
+                if "429" in str(e): return {"status": "RATE_LIMIT", "message": "ALL API QUOTAS EXHAUSTED"}
         return {"status": "SUCCESS", "queued_count": count, "mode": "RETRO_WEAVE"}
 
     return {"status": "SUCCESS", "message": "All Systems Synchronized.", "queued_count": 0}
@@ -628,10 +683,11 @@ def handle_request(event: EventModel, background_tasks: BackgroundTasks):
         log(f"Processing Commit: {event.commit_type}")
         content_to_save = event.memory_text
         
+        # UPDATED: Use Fallback for Summary too
         if event.commit_type == 'summary' and GEMINI_CLIENT:
             try:
-                summary_res = GEMINI_CLIENT.models.generate_content(
-                    model='gemini-2.5-flash',
+                summary_res = generate_with_fallback(
+                    GEMINI_CLIENT,
                     contents=[f"Summarize this interaction for the Lithographic Core: {event.memory_text}"]
                 )
                 content_to_save = summary_res.text
