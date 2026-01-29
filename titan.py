@@ -169,6 +169,27 @@ class DBManager:
         finally:
             if conn: conn.close()
 
+    def get_unprocessed_lithographs(self, limit=50):
+        conn = None
+        try:
+            conn = self.connect()
+            with conn.cursor() as cur:
+                # Find IDs that are active but NOT in the holographic foundation table
+                cur.execute("""
+                    SELECT id, memory_text 
+                    FROM chronicles 
+                    WHERE is_active = TRUE 
+                    AND id NOT IN (SELECT lithograph_id FROM node_foundation WHERE lithograph_id IS NOT NULL)
+                    ORDER BY id DESC
+                    LIMIT %s;
+                """, (limit,))
+                return cur.fetchall()
+        except Exception as e:
+            log_error(f"Sync Scan Error: {e}")
+            return []
+        finally:
+            if conn: conn.close()
+
     def delete_range(self, start_id, end_id):
         conn = None
         try:
@@ -395,6 +416,25 @@ def root_health_check():
 @app.get("/health")
 def health():
     return {"status": "ONLINE"}
+
+@app.post("/admin/sync")
+def sync_holograms(background_tasks: BackgroundTasks):
+    db_manager = DBManager()
+    # 1. Find the ghosts
+    ghosts = db_manager.get_unprocessed_lithographs(limit=50)
+    
+    if not ghosts:
+        return {"status": "SUCCESS", "message": "All Systems Synchronized. No ghosts found."}
+
+    log(f"SYNC PROTOCOL: Found {len(ghosts)} un-refracted memories. Queuing...")
+
+    # 2. Queue them up for processing
+    for row in ghosts:
+        litho_id = row[0]
+        text_content = row[1]
+        background_tasks.add_task(background_hologram_process, text_content, litho_id)
+
+    return {"status": "SUCCESS", "queued_count": len(ghosts), "message": f"Processing {len(ghosts)} artifacts in background."}
 
 @app.post("/")
 def handle_request(event: EventModel, background_tasks: BackgroundTasks):
