@@ -225,7 +225,8 @@ class DBManager:
                 """, (limit,))
                 return cur.fetchall()
         except: return []
-        finally: if conn: conn.close()
+        finally: 
+            if conn: conn.close()
 
     # 2. FIND ZOMBIES (Active Litho + Hologram, BUT No Weaver Links)
     def get_unwoven_holograms(self, limit=20):
@@ -245,7 +246,8 @@ class DBManager:
                 """, (limit,))
                 return cur.fetchall()
         except: return []
-        finally: if conn: conn.close()
+        finally: 
+            if conn: conn.close()
 
     def scrape_web(self, target_url):
         if not target_url.startswith('http'):
@@ -276,7 +278,8 @@ class DBManager:
             conn.commit()
             return {"status": "SUCCESS", "deleted_id": deleted_id}
         except: return {"status": "FAILURE"}
-        finally: if conn: conn.close()
+        finally: 
+            if conn: conn.close()
 
     def delete_range(self, start_id, end_id):
         conn = None
@@ -288,7 +291,8 @@ class DBManager:
             conn.commit()
             return {"status": "SUCCESS", "deleted_count": count}
         except: return {"status": "FAILURE"}
-        finally: if conn: conn.close()
+        finally: 
+            if conn: conn.close()
         
     def restore_range(self, start_id, end_id):
         conn = None
@@ -300,7 +304,8 @@ class DBManager:
             conn.commit()
             return {"status": "SUCCESS", "restored_count": count}
         except: return {"status": "FAILURE"}
-        finally: if conn: conn.close()
+        finally: 
+            if conn: conn.close()
 
     def rehash_chain(self, reason_note):
         # (Standard rehash logic suppressed for brevity, assume present)
@@ -330,7 +335,8 @@ class DBManager:
                 })
             return results
         except: return []
-        finally: if conn: conn.close()
+        finally: 
+            if conn: conn.close()
 
 # --- THE WEAVER ---
 class WeaverManager:
@@ -355,7 +361,8 @@ class WeaverManager:
                 """, ([f"%{k}%" for k in keywords[:3]],))
                 return cur.fetchall()
         except: return []
-        finally: if conn: conn.close()
+        finally: 
+            if conn: conn.close()
 
     def create_link(self, source_hid, target_hid, link_data):
         conn = None
@@ -371,7 +378,8 @@ class WeaverManager:
             log(f"WEAVER: Synapse Created ({link_data['type']}) between {source_hid} -> {target_hid}")
         except Exception as e:
             log_error(f"Weaver Link Error: {e}")
-        finally: if conn: conn.close()
+        finally: 
+            if conn: conn.close()
 
     def weave(self, new_hologram_id, new_text, keywords):
         log(f"WEAVER: Scanning for resonance for node {new_hologram_id}...")
@@ -430,7 +438,8 @@ class HolographicManager:
         except Exception as e:
             if conn: conn.rollback()
             return {"status": "FAILURE", "error": str(e)}
-        finally: if conn: conn.close()
+        finally: 
+            if conn: conn.close()
 
 # --- WORKERS ---
 
