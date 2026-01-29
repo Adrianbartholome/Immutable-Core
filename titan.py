@@ -98,7 +98,7 @@ except Exception as e:
 
 # --- CASCADE UTILS ---
 # Priority Order: Experimental (2.5) -> Stable (1.5)
-MODEL_CASCADE = ["gemini-2.5-flash", "gemini-1.5-flash"]
+MODEL_CASCADE = ["gemini-2.0-flash-exp", "gemini-1.5-flash-002"]
 
 def generate_with_fallback(client, contents, system_prompt=None, config=None):
     if not client: return None
