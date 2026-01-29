@@ -5,10 +5,8 @@ import psycopg2
 import re
 import uuid
 import urllib.parse
-import traceback
 import sys
 import requests
-import random
 import time
 from datetime import datetime
 from google import genai
@@ -16,10 +14,10 @@ from google.genai import types
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List, Set
 
 # --- APP INITIALIZATION ---
-app = FastAPI(title="Aether Titan Core (Platinum V5.6 - Cascading Models)")
+app = FastAPI(title="Aether Titan Core (Platinum V5.7 - Titan Shield)")
 
 app.add_middleware(
     CORSMiddleware,
@@ -35,6 +33,39 @@ def log(message):
 
 def log_error(message):
     print(f"[TITAN-ERROR] {message}", file=sys.stderr, flush=True)
+
+# --- TITAN SHIELD (CIRCUIT BREAKER) ---
+class TitanShield:
+    def __init__(self):
+        self.soft_cooldowns = {}   # model_name: resume_timestamp
+        self.daily_exhausted = set() # model_name (hard lock for 429s)
+        self.retry_delay = 300      # 5 minutes for soft errors (503s)
+
+    def mark_exhausted(self, model_name):
+        log(f"🚫 QUOTA DEPLETED: {model_name} locked until manual reset.")
+        self.daily_exhausted.add(model_name)
+
+    def mark_temporary_fail(self, model_name):
+        log(f"⏳ SIGNAL FLAKY: {model_name} shunted for {self.retry_delay}s.")
+        self.soft_cooldowns[model_name] = time.time() + self.retry_delay
+
+    def is_viable(self, model_name):
+        if model_name in self.daily_exhausted:
+            return False
+        
+        resume_time = self.soft_cooldowns.get(model_name)
+        if resume_time and time.time() < resume_time:
+            return False
+            
+        return True
+
+    def reset(self):
+        self.daily_exhausted.clear()
+        self.soft_cooldowns.clear()
+        log("♻️ TITAN SHIELD RESET: All paths re-opened.")
+
+# Global Shield Instance
+SHIELD = TitanShield()
 
 # --- PROMPTS ---
 SCORING_SYSTEM_PROMPT = """
@@ -96,12 +127,7 @@ except Exception as e:
     log_error(f"Gemini Init Failed: {e}")
     GEMINI_CLIENT = None
 
-# --- CASCADE UTILS ---
-
-# --- UPDATED CASCADE UTILS (TITAN ERA) ---
-# Primary: High-speed Experimental 
-# Fallback: Stable Next-Gen (Replaces deprecated 1.5)
-# --- UPDATED CONFIGURATION (TITAN ERA) ---
+# --- CASCADE CONFIG ---
 # Primary: High-speed Experimental 
 # Fallback: Stable Next-Gen (PhD-level reasoning)
 MODEL_CASCADE = ["gemini-2.5-flash", "gemini-3-flash-preview"] 
@@ -109,24 +135,30 @@ MODEL_CASCADE = ["gemini-2.5-flash", "gemini-3-flash-preview"]
 def generate_with_fallback(client, contents, system_prompt=None, config=None):
     if not client: return None
     
-    # Initialize config if none provided
+    # Initialize config
     if config is None:
         config = types.GenerateContentConfig()
     elif isinstance(config, dict):
         config = types.GenerateContentConfig(**config)
 
-    # Apply the system instruction if provided
+    # Apply system instruction if provided
     if system_prompt:
         config.system_instruction = system_prompt
     
+    # Filter for viable models based on Shield status
+    viable_cascade = [m for m in MODEL_CASCADE if SHIELD.is_viable(m)]
+    
+    if not viable_cascade:
+        log_error("🆘 CRITICAL: ALL MODELS EXHAUSTED OR LOCKED.")
+        # If specific 429 lock, allow user to reset via UI logic
+        raise Exception("Titan Shield Report: All models unavailable.")
+    
     last_error = None
     
-    for model_name in MODEL_CASCADE:
+    for model_name in viable_cascade:
         try:
             log(f"TRANSMITTING TO NODE: {model_name}...")
             
-            # Gemini 3 Thinking: We let the model auto-calculate its thinking level
-            # by default, but we can force 'HIGH' for Weaver logic later.
             response = client.models.generate_content(
                 model=model_name,
                 contents=contents,
@@ -136,127 +168,24 @@ def generate_with_fallback(client, contents, system_prompt=None, config=None):
             
         except Exception as e:
             err_str = str(e).upper()
-            if any(code in err_str for code in ["429", "RESOURCE_EXHAUSTED", "503", "TIMEOUT"]):
-                log(f"⚠️ SIGNAL DEGRADATION: {model_name} unavailable. Cascading to next node...")
+            
+            # HARD LOCK: Daily Limit
+            if any(code in err_str for code in ["429", "RESOURCE_EXHAUSTED"]):
+                SHIELD.mark_exhausted(model_name)
                 last_error = e
                 continue 
+            
+            # SOFT SHUNT: Temporary issues
+            elif any(code in err_str for code in ["503", "500", "TIMEOUT"]):
+                SHIELD.mark_temporary_fail(model_name)
+                last_error = e
+                continue
+                
             else:
+                # Logic errors shouldn't trigger fallback
                 log_error(f"STATIONARY ERROR on {model_name}: {e}")
                 raise e
                 
-    log_error("CRITICAL: ALL TITAN NODES OFFLINE.")
-    raise last_error
-
-# --- THE WEAVER: RESONANCE UPGRADE ---
-# I've updated the weave function to use a 'Thinking' budget.
-# This ensures it doesn't just guess; it reasons through the link.
-
-def weave(self, new_hologram_id, new_text, keywords):
-    log(f"WEAVER: Scanning for resonance for node {new_hologram_id}...")
-    candidates = self.find_candidates(keywords)
-    if not candidates: return
-
-    for old_text, old_hid in candidates:
-        if str(old_hid) == str(new_hologram_id): continue 
-        try:
-            prompt = f"NEW MEMORY:\n{new_text[:2000]}\n\nEXISTING MEMORY:\n{old_text[:2000]}"
-            
-            # We use gemini-3-flash-preview for the Weaver's high-level logic
-            res = generate_with_fallback(
-                GEMINI_CLIENT,
-                contents=[prompt],
-                system_prompt=WEAVER_SYSTEM_PROMPT,
-                config=types.GenerateContentConfig(
-                    temperature=0.1,
-                    response_mime_type="application/json",
-                    # ENGAGING THE THINKING CORE
-                    thinking_config=types.ThinkingConfig(
-                        include_thoughts=True
-                    )
-                )
-            )
-            
-            result = json.loads(res.text)
-            if result.get("resonance"):
-                self.create_link(new_hologram_id, old_hid, result)
-                
-        except Exception as e:
-            log_error(f"Weaver Analysis Error: {e}")
-    if not client: return None
-    if config is None: config = {}
-    
-    last_error = None
-    
-    for model_name in MODEL_CASCADE:
-        try:
-            # We wrap this in a retry block for connection stability
-            log(f"TRANSMITTING TO NODE: {model_name}...")
-            
-            # Using the system_instruction parameter properly for Gemini 3/2.5
-            response = client.models.generate_content(
-                model=model_name,
-                contents=contents,
-                config={
-                    **config,
-                    "system_instruction": system_prompt if system_prompt else None
-                }
-            )
-            return response
-            
-        except Exception as e:
-            err_str = str(e).upper()
-            if any(code in err_str for code in ["429", "RESOURCE_EXHAUSTED", "503", "TIMEOUT"]):
-                log(f"⚠️ SIGNAL DEGRADATION: {model_name} unavailable. Cascading to next node...")
-                last_error = e
-                continue 
-            else:
-                log_error(f"STATIONARY ERROR on {model_name}: {e}")
-                raise e
-                
-    log_error("CRITICAL: ALL TITAN NODES OFFLINE.")
-    raise last_error
-    if not client: return None
-    
-    # Ensure config exists
-    if config is None: config = {}
-    
-    last_error = None
-    
-    for model_name in MODEL_CASCADE:
-        try:
-            # Add system instruction if present (Gemini 2.0/1.5 unified syntax)
-            # Note: The google-genai SDK usage varies slightly, passing raw config usually works.
-            # We will use the client.models.generate_content method.
-            
-            # Construct payload args dynamically to handle system instruction if needed
-            # For simplicity in this SDK version, we prepend system prompt to contents if not supported directly in args
-            # But the 'config' object usually takes 'system_instruction' in newer SDKs.
-            # We'll stick to the proven method: 
-            
-            final_contents = contents
-            if system_prompt:
-                # Prepend system prompt to the message for robust compatibility across versions
-                final_contents = [system_prompt + "\n\n" + str(contents[0])]
-            
-            response = client.models.generate_content(
-                model=model_name,
-                contents=final_contents,
-                config=config
-            )
-            return response
-            
-        except Exception as e:
-            err_str = str(e)
-            if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                log(f"⚠️ MODEL FALLBACK: {model_name} exhausted. Switching to next...")
-                last_error = e
-                continue # Try next model
-            else:
-                # If it's a real error (like bad request), fail immediately
-                raise e
-                
-    # If we run out of models
-    log_error("ALL MODELS EXHAUSTED.")
     raise last_error
 
 # --- UTILITIES ---
@@ -303,7 +232,6 @@ class DBManager:
         try:
             conn = self.connect()
             with conn.cursor() as cur:
-                # Weaver Table (Synapses)
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS node_links (
                         id UUID PRIMARY KEY,
@@ -342,15 +270,14 @@ class DBManager:
             compressed = encode_memory(raw_text, token_cache)
             score = 5 
             
-            # LOGIC: Manual Override > SNEGO-P > Default
             if manual_score: 
                 score = int(manual_score)
             elif client:
                 try:
-                    # UPDATED: Use Fallback
                     scoring_res = generate_with_fallback(
                         client, 
-                        contents=[SCORING_SYSTEM_PROMPT + f"\n\nMEMORY TO SCORE:\n{raw_text[:5000]}"]
+                        contents=[f"MEMORY TO SCORE:\n{raw_text[:5000]}"],
+                        system_prompt=SCORING_SYSTEM_PROMPT
                     )
                     score_match = re.search(r'SCORE:\s*(\d+)', scoring_res.text)
                     if score_match:
@@ -374,9 +301,7 @@ class DBManager:
             if conn: conn.close()
 
     # --- SYNC TOOLS ---
-    
-    # 1. FIND GHOSTS (Active Litho, No Hologram)
-    def get_orphaned_lithographs(self, limit=5): # Reduced limit for synchronous processing
+    def get_orphaned_lithographs(self, limit=5):
         conn = None
         try:
             conn = self.connect()
@@ -394,8 +319,7 @@ class DBManager:
         finally: 
             if conn: conn.close()
 
-    # 2. FIND ZOMBIES (Active Litho + Hologram, BUT No Weaver Links)
-    def get_unwoven_holograms(self, limit=5): # Reduced limit
+    def get_unwoven_holograms(self, limit=5):
         conn = None
         try:
             conn = self.connect()
@@ -596,16 +520,22 @@ class WeaverManager:
         for old_text, old_hid in candidates:
             if str(old_hid) == str(new_hologram_id): continue 
             try:
-                # UPDATED: Use Fallback
-                prompt = f"{WEAVER_SYSTEM_PROMPT}\n\nNEW MEMORY:\n{new_text[:1000]}\n\nEXISTING MEMORY:\n{old_text[:1000]}"
+                # Use Gemini 3 Thinking logic
+                prompt = f"NEW MEMORY:\n{new_text[:2000]}\n\nEXISTING MEMORY:\n{old_text[:2000]}"
+                
                 res = generate_with_fallback(
                     GEMINI_CLIENT,
                     contents=[prompt],
-                    config={"temperature": 0.1, "response_mime_type": "application/json"}
+                    system_prompt=WEAVER_SYSTEM_PROMPT,
+                    config=types.GenerateContentConfig(
+                        temperature=0.1, 
+                        response_mime_type="application/json",
+                        thinking_config=types.ThinkingConfig(include_thoughts=True) # ACTIVATE THINKING
+                    )
                 )
                 
                 raw = res.text.strip()
-                if raw.startswith("```"): raw = raw.split("\n", 1)[-1].rsplit("\n", 1)[0]
+                if raw.startswith("`" * 3): raw = raw.split("\n", 1)[-1].rsplit("\n", 1)[0]
                 if raw.startswith("json"): raw = raw[4:].strip()
                 result = json.loads(raw)
                 
@@ -653,15 +583,15 @@ def process_hologram_sync(content_to_save: str, litho_id: int):
     try:
         if not GEMINI_CLIENT: return False
 
-        # UPDATED: Use Fallback
         refraction = generate_with_fallback(
             GEMINI_CLIENT,
-            contents=[REFRACTOR_SYSTEM_PROMPT + f"\n\nINPUT DATA TO REFRACT:\n{content_to_save[:10000]}"],
-            config={"temperature": 0.1, "response_mime_type": "application/json"}
+            contents=[f"INPUT DATA TO REFRACT:\n{content_to_save[:10000]}"],
+            system_prompt=REFRACTOR_SYSTEM_PROMPT,
+            config=types.GenerateContentConfig(temperature=0.1, response_mime_type="application/json")
         )
         
         raw_text = refraction.text.strip()
-        if raw_text.startswith("```"): raw_text = raw_text.split("\n", 1)[-1].rsplit("\n", 1)[0]
+        if raw_text.startswith("`" * 3): raw_text = raw_text.split("\n", 1)[-1].rsplit("\n", 1)[0]
         if raw_text.startswith("json"): raw_text = raw_text[4:].strip()
         packet = json.loads(raw_text)
         
@@ -683,14 +613,14 @@ def process_retro_weave_sync(content_to_save: str, hologram_id: str):
     try:
         if not GEMINI_CLIENT: return False
         
-        # UPDATED: Use Fallback
         kw_res = generate_with_fallback(
             GEMINI_CLIENT,
-            contents=[KEYWORDS_PROMPT + f"\n\nTEXT:\n{content_to_save[:5000]}"],
-            config={"temperature": 0.1, "response_mime_type": "application/json"}
+            contents=[f"TEXT:\n{content_to_save[:5000]}"],
+            system_prompt=KEYWORDS_PROMPT,
+            config=types.GenerateContentConfig(temperature=0.1, response_mime_type="application/json")
         )
         raw = kw_res.text.strip()
-        if raw.startswith("```"): raw = raw.split("\n", 1)[-1].rsplit("\n", 1)[0]
+        if raw.startswith("`" * 3): raw = raw.split("\n", 1)[-1].rsplit("\n", 1)[0]
         if raw.startswith("json"): raw = raw[4:].strip()
         keywords = json.loads(raw)
 
@@ -726,7 +656,23 @@ def startup_event():
 
 @app.get("/")
 def root_health_check():
-    return {"status": "TITAN ONLINE", "mode": "PLATINUM_V5.6_CASCADING_MODELS"}
+    return {"status": "TITAN ONLINE", "mode": "PLATINUM_V5.7_TITAN_SHIELD"}
+
+# --- SHIELD ADMIN ROUTES ---
+@app.post("/admin/shield/reset")
+def reset_titan_shield():
+    """Manually clears all shunts and exhaustion locks."""
+    SHIELD.reset()
+    return {"status": "SUCCESS", "message": "All model paths cleared."}
+
+@app.get("/admin/shield/status")
+def get_shield_status():
+    """Returns the current status of the model cascade."""
+    return {
+        "exhausted": list(SHIELD.daily_exhausted),
+        "cooling_down": list(SHIELD.soft_cooldowns.keys()),
+        "primary_viable": SHIELD.is_viable(MODEL_CASCADE[0])
+    }
 
 @app.post("/admin/sync")
 def sync_holograms():
@@ -743,7 +689,8 @@ def sync_holograms():
                 if success: count += 1
             except Exception as e:
                 # If ALL models failed, break loop
-                if "429" in str(e): return {"status": "RATE_LIMIT", "message": "ALL API QUOTAS EXHAUSTED"}
+                if "Titan Shield Report" in str(e): 
+                    return {"status": "RATE_LIMIT", "message": "ALL API QUOTAS EXHAUSTED"}
         return {"status": "SUCCESS", "queued_count": count, "mode": "ORPHAN_REPAIR"}
     
     # Priority 2: Find Unwoven (Zombies)
@@ -755,7 +702,8 @@ def sync_holograms():
                 success = process_retro_weave_sync(row[1], row[0])
                 if success: count += 1
             except Exception as e:
-                if "429" in str(e): return {"status": "RATE_LIMIT", "message": "ALL API QUOTAS EXHAUSTED"}
+                if "Titan Shield Report" in str(e): 
+                    return {"status": "RATE_LIMIT", "message": "ALL API QUOTAS EXHAUSTED"}
         return {"status": "SUCCESS", "queued_count": count, "mode": "RETRO_WEAVE"}
 
     return {"status": "SUCCESS", "message": "All Systems Synchronized.", "queued_count": 0}
@@ -797,7 +745,7 @@ def handle_request(event: EventModel, background_tasks: BackgroundTasks):
         log(f"Processing Commit: {event.commit_type}")
         content_to_save = event.memory_text
         
-        # UPDATED: Use Fallback for Summary too
+        # Summary with Fallback
         if event.commit_type == 'summary' and GEMINI_CLIENT:
             try:
                 summary_res = generate_with_fallback(
@@ -827,3 +775,6 @@ def handle_request(event: EventModel, background_tasks: BackgroundTasks):
     except Exception as e:
         log_error(f"FATAL REQUEST ERROR: {e}")
         return {"status": "FATAL ERROR", "error": str(e)}
+
+# Cache init
+TOKEN_DICTIONARY_CACHE = {}
