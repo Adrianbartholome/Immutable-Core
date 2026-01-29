@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from typing import Optional
 
 # --- APP INITIALIZATION ---
-app = FastAPI(title="Aether Titan Core (Platinum V4)")
+app = FastAPI(title="Aether Titan Core (Platinum V5 - Rehash)")
 
 app.add_middleware(
     CORSMiddleware,
@@ -72,6 +72,8 @@ except Exception as e:
 def generate_hash(memory_data, previous_hash_string):
     if isinstance(memory_data.get("timestamp"), datetime):
         memory_data["timestamp"] = memory_data["timestamp"].isoformat()
+    # If timestamp is a string but not ISO, leave it (trusting DB sort)
+    
     data_block_string = json.dumps(memory_data, sort_keys=True)
     raw_content = previous_hash_string + data_block_string
     return hashlib.sha256(raw_content.encode('utf-8')).hexdigest()
@@ -95,7 +97,7 @@ def encode_memory(raw_text, token_map):
             compressed_text = compressed_text.replace(phrase, hash_code)
     return compressed_text
 
-# --- DATABASE MANAGER (POOLER OPTIMIZED) ---
+# --- DATABASE MANAGER ---
 def get_db_connection_string():
     password = urllib.parse.quote_plus(os.environ.get("DB_PASSWORD", ""))
     return f"postgresql://{os.environ.get('DB_USER')}:{password}@{os.environ.get('DB_HOST')}:{os.environ.get('DB_PORT', '6543')}/{os.environ.get('DB_NAME')}?sslmode=require"
@@ -173,14 +175,84 @@ class DBManager:
             conn = self.connect()
             with conn.cursor() as cur:
                 cur.execute("UPDATE chronicles SET is_active = FALSE WHERE id >= %s AND id <= %s RETURNING id;", (start_id, end_id))
-                deleted_rows = cur.fetchall()
-                count = len(deleted_rows)
+                count = len(cur.fetchall())
             conn.commit()
             log(f"BATCH DEACTIVATION: IDs {start_id} to {end_id} ({count} records).")
             return {"status": "SUCCESS", "deleted_count": count}
         except Exception as e:
             if conn: conn.rollback()
             log_error(f"Batch Delete Error: {e}")
+            return {"status": "FAILURE", "error": str(e)}
+        finally:
+            if conn: conn.close()
+
+    # --- NEW: RESTORE RANGE (UNDO) ---
+    def restore_range(self, start_id, end_id):
+        conn = None
+        try:
+            conn = self.connect()
+            with conn.cursor() as cur:
+                cur.execute("UPDATE chronicles SET is_active = TRUE WHERE id >= %s AND id <= %s RETURNING id;", (start_id, end_id))
+                count = len(cur.fetchall())
+            conn.commit()
+            log(f"BATCH RESTORE: IDs {start_id} to {end_id} ({count} records).")
+            return {"status": "SUCCESS", "restored_count": count}
+        except Exception as e:
+            if conn: conn.rollback()
+            log_error(f"Batch Restore Error: {e}")
+            return {"status": "FAILURE", "error": str(e)}
+        finally:
+            if conn: conn.close()
+
+    # --- NEW: REHASH PROTOCOL ---
+    def rehash_chain(self, reason_note):
+        conn = None
+        try:
+            conn = self.connect()
+            cur = conn.cursor()
+            
+            # 1. HARD DELETE inactive records
+            cur.execute("DELETE FROM chronicles WHERE is_active = FALSE;")
+            deleted_count = cur.rowcount
+            
+            # 2. INSERT REHASH MARKER (So we know why history changed)
+            now = datetime.now()
+            marker_text = f"[SYSTEM EVENT]: Global Rehash Initiated. Reason: {reason_note}"
+            # We insert it temporarily with dummy hashes; loop will fix it
+            cur.execute("INSERT INTO chronicles (weighted_score, created_at, memory_text, previous_hash, current_hash, is_active) VALUES (9, %s, %s, 'PENDING', 'PENDING', TRUE);", (now, marker_text))
+            
+            # 3. FETCH ALL ACTIVE RECORDS (Ordered by creation)
+            cur.execute("SELECT id, weighted_score, created_at, memory_text FROM chronicles WHERE is_active = TRUE ORDER BY created_at ASC, id ASC;")
+            rows = cur.fetchall()
+            
+            # 4. RECALCULATE CHAIN
+            previous_hash = "" # Genesis seed
+            rehashed_count = 0
+            
+            for row in rows:
+                r_id, r_score, r_date, r_text = row
+                
+                # Calculate new hash based on the NEW previous_hash
+                new_current_hash = generate_hash({
+                    "timestamp": r_date, 
+                    "weighted_score": r_score, 
+                    "memory_text": r_text
+                }, previous_hash)
+                
+                # Update record
+                cur.execute("UPDATE chronicles SET previous_hash = %s, current_hash = %s WHERE id = %s;", (previous_hash, new_current_hash, r_id))
+                
+                # Move chain forward
+                previous_hash = new_current_hash
+                rehashed_count += 1
+
+            conn.commit()
+            log(f"REHASH COMPLETE. Purged: {deleted_count}. Re-chained: {rehashed_count}.")
+            return {"status": "SUCCESS", "purged_count": deleted_count, "rehashed_count": rehashed_count}
+
+        except Exception as e:
+            if conn: conn.rollback()
+            log_error(f"REHASH CRITICAL FAILURE: {e}")
             return {"status": "FAILURE", "error": str(e)}
         finally:
             if conn: conn.close()
@@ -286,10 +358,11 @@ class EventModel(BaseModel):
     override_score: Optional[int] = None
     target_id: Optional[int] = None 
     range_end: Optional[int] = None
+    note: Optional[str] = None # For Rehash Reason
 
 @app.get("/")
 def root_health_check():
-    return {"status": "TITAN ONLINE", "mode": "PLATINUM_V4_RANGE_PURGE"}
+    return {"status": "TITAN ONLINE", "mode": "PLATINUM_V5_REHASH"}
 
 @app.get("/health")
 def health():
@@ -307,15 +380,26 @@ def handle_request(event: EventModel, background_tasks: BackgroundTasks):
 
     try:
         if event.action == 'delete':
-            if not event.target_id: return {"error": "Target ID required for deletion"}
+            if not event.target_id: return {"error": "Target ID required"}
             log(f"Processing Deletion for ID: {event.target_id}")
             return db_manager.delete_lithograph(event.target_id)
 
         if event.action == 'delete_range':
-            if not event.target_id or not event.range_end:
-                return {"error": "Start and End IDs required"}
-            log(f"Processing Range Delete: {event.target_id} - {event.range_end}")
+            if not event.target_id or not event.range_end: return {"error": "Start/End required"}
+            log(f"Processing Range Delete: {event.target_id}-{event.range_end}")
             return db_manager.delete_range(event.target_id, event.range_end)
+
+        # --- NEW ACTIONS ---
+        if event.action == 'restore_range':
+            if not event.target_id or not event.range_end: return {"error": "Start/End required"}
+            log(f"Processing Range Restore: {event.target_id}-{event.range_end}")
+            return db_manager.restore_range(event.target_id, event.range_end)
+
+        if event.action == 'rehash':
+            if not event.note: return {"error": "Reason Note required for rehash"}
+            log(f"INITIATING REHASH PROTOCOL. Reason: {event.note}")
+            return db_manager.rehash_chain(event.note)
+        # -------------------
 
         if event.action == 'retrieve':
             if not event.query: return {"error": "No query"}
