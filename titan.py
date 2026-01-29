@@ -7,6 +7,7 @@ import uuid
 import urllib.parse
 import traceback
 import sys
+import requests # --- NEW: FOR WEB SCRAPING
 from datetime import datetime
 from google import genai
 from fastapi import FastAPI, BackgroundTasks
@@ -15,7 +16,7 @@ from pydantic import BaseModel
 from typing import Optional
 
 # --- APP INITIALIZATION ---
-app = FastAPI(title="Aether Titan Core (Platinum V5.1 - Cascade Patch)")
+app = FastAPI(title="Aether Titan Core (Platinum V5.2 - Spider Module)")
 
 app.add_middleware(
     CORSMiddleware,
@@ -202,76 +203,46 @@ class DBManager:
         finally:
             if conn: conn.close()
 
-    # --- REHASH PROTOCOL (PATCHED FOR CASCADE DELETE) ---
     def rehash_chain(self, reason_note):
         conn = None
         try:
             conn = self.connect()
             cur = conn.cursor()
-            
-            # --- STEP 1: IDENTIFY TARGETS ---
             cur.execute("SELECT id FROM chronicles WHERE is_active = FALSE;")
             inactive_rows = cur.fetchall()
             inactive_ids = [r[0] for r in inactive_rows]
-            
             deleted_count = 0
-            
             if inactive_ids:
-                # Format tuple for SQL IN clause
                 ids_tuple = tuple(inactive_ids)
-                
-                # --- STEP 2: CASCADE DELETE (Holographic Cortex) ---
-                # We must delete the CHILDREN (Nodes) before the PARENTS (Chronicles)
-                
-                # Find associated Holograms
                 cur.execute("SELECT hologram_id FROM node_foundation WHERE lithograph_id IN %s", (ids_tuple,))
                 holo_rows = cur.fetchall()
-                
                 if holo_rows:
                     holo_ids = tuple([str(r[0]) for r in holo_rows])
-                    
-                    # Delete Leaf Nodes (Data, Essence, Mission)
                     cur.execute("DELETE FROM node_essence WHERE hologram_id IN %s", (holo_ids,))
                     cur.execute("DELETE FROM node_mission WHERE hologram_id IN %s", (holo_ids,))
                     cur.execute("DELETE FROM node_data WHERE hologram_id IN %s", (holo_ids,))
-                    
-                    # Delete Foundation Node
                     cur.execute("DELETE FROM node_foundation WHERE hologram_id IN %s", (holo_ids,))
-                
-                # --- STEP 3: DELETE LITHOGRAPHS (The Hard Delete) ---
                 cur.execute("DELETE FROM chronicles WHERE id IN %s", (ids_tuple,))
                 deleted_count = cur.rowcount
             
-            # --- STEP 4: INSERT REHASH MARKER ---
             now = datetime.now()
             marker_text = f"[SYSTEM EVENT]: Global Rehash Initiated. Reason: {reason_note}"
             cur.execute("INSERT INTO chronicles (weighted_score, created_at, memory_text, previous_hash, current_hash, is_active) VALUES (9, %s, %s, 'PENDING', 'PENDING', TRUE);", (now, marker_text))
             
-            # --- STEP 5: RECALCULATE CHAIN ---
             cur.execute("SELECT id, weighted_score, created_at, memory_text FROM chronicles WHERE is_active = TRUE ORDER BY created_at ASC, id ASC;")
             rows = cur.fetchall()
-            
-            previous_hash = "" # Genesis seed
+            previous_hash = "" 
             rehashed_count = 0
-            
             for row in rows:
                 r_id, r_score, r_date, r_text = row
-                
-                new_current_hash = generate_hash({
-                    "timestamp": r_date, 
-                    "weighted_score": r_score, 
-                    "memory_text": r_text
-                }, previous_hash)
-                
+                new_current_hash = generate_hash({"timestamp": r_date, "weighted_score": r_score, "memory_text": r_text}, previous_hash)
                 cur.execute("UPDATE chronicles SET previous_hash = %s, current_hash = %s WHERE id = %s;", (previous_hash, new_current_hash, r_id))
-                
                 previous_hash = new_current_hash
                 rehashed_count += 1
 
             conn.commit()
             log(f"REHASH COMPLETE. Purged: {deleted_count}. Re-chained: {rehashed_count}.")
             return {"status": "SUCCESS", "purged_count": deleted_count, "rehashed_count": rehashed_count}
-
         except Exception as e:
             if conn: conn.rollback()
             log_error(f"REHASH CRITICAL FAILURE: {e}")
@@ -307,6 +278,25 @@ class DBManager:
             return []
         finally:
             if conn: conn.close()
+
+    # --- NEW: WEB SCRAPER (JINA BRIDGE) ---
+    def scrape_web(self, target_url):
+        log(f"DEPLOYING SPIDER TO: {target_url}")
+        try:
+            jina_endpoint = f"https://r.jina.ai/{target_url}"
+            # Standard browser headers to play nice
+            headers = {'User-Agent': 'Mozilla/5.0'}
+            response = requests.get(jina_endpoint, headers=headers, timeout=20)
+            
+            if response.status_code == 200:
+                log("SPIDER RETURNED WITH PAYLOAD.")
+                return {"status": "SUCCESS", "content": response.text}
+            else:
+                log_error(f"SPIDER BLOCKED: {response.status_code}")
+                return {"status": "FAILURE", "error": f"HTTP {response.status_code}"}
+        except Exception as e:
+            log_error(f"SPIDER CRASH: {e}")
+            return {"status": "FAILURE", "error": str(e)}
 
 # --- HOLOGRAPHIC MANAGER ---
 class HolographicManager:
@@ -380,11 +370,12 @@ class EventModel(BaseModel):
     override_score: Optional[int] = None
     target_id: Optional[int] = None 
     range_end: Optional[int] = None
-    note: Optional[str] = None 
+    note: Optional[str] = None
+    url: Optional[str] = None # --- NEW: URL Field
 
 @app.get("/")
 def root_health_check():
-    return {"status": "TITAN ONLINE", "mode": "PLATINUM_V5.1_CASCADE"}
+    return {"status": "TITAN ONLINE", "mode": "PLATINUM_V5.2_SPIDER"}
 
 @app.get("/health")
 def health():
@@ -401,6 +392,12 @@ def handle_request(event: EventModel, background_tasks: BackgroundTasks):
         except: pass
 
     try:
+        # --- NEW: SCRAPE HANDLER ---
+        if event.action == 'scrape':
+            if not event.url: return {"error": "URL required"}
+            return db_manager.scrape_web(event.url)
+        # ---------------------------
+
         if event.action == 'delete':
             if not event.target_id: return {"error": "Target ID required"}
             log(f"Processing Deletion for ID: {event.target_id}")
