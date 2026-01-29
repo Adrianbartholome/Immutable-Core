@@ -280,19 +280,34 @@ class DBManager:
             if conn: conn.close()
 
     # --- NEW: WEB SCRAPER (JINA BRIDGE) ---
+    # --- NEW: WEB SCRAPER (JINA BRIDGE) ---
     def scrape_web(self, target_url):
+        # 1. FIX THE URL (The Bulletproof Patch)
+        if not target_url.startswith('http'):
+            target_url = 'https://' + target_url
+            
         log(f"DEPLOYING SPIDER TO: {target_url}")
+        
         try:
             jina_endpoint = f"https://r.jina.ai/{target_url}"
-            # Standard browser headers to play nice
+            
+            # 2. ADD AUTHENTICATION (From DigitalOcean Env Var)
+            jina_key = os.environ.get('JINA_API_KEY')
             headers = {'User-Agent': 'Mozilla/5.0'}
+            
+            if jina_key:
+                headers['Authorization'] = f"Bearer {jina_key}"
+            else:
+                log("WARNING: JINA_API_KEY not found. Running anonymously (might be rate limited).")
+
             response = requests.get(jina_endpoint, headers=headers, timeout=20)
             
             if response.status_code == 200:
                 log("SPIDER RETURNED WITH PAYLOAD.")
                 return {"status": "SUCCESS", "content": response.text}
             else:
-                log_error(f"SPIDER BLOCKED: {response.status_code}")
+                # Log the actual error text from Jina for debugging
+                log_error(f"SPIDER BLOCKED: {response.status_code} - {response.text[:100]}")
                 return {"status": "FAILURE", "error": f"HTTP {response.status_code}"}
         except Exception as e:
             log_error(f"SPIDER CRASH: {e}")
