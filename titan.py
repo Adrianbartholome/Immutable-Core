@@ -7,7 +7,7 @@ import uuid
 import urllib.parse
 import traceback
 import sys
-import requests # --- NEW: FOR WEB SCRAPING
+import requests
 from datetime import datetime
 from google import genai
 from fastapi import FastAPI, BackgroundTasks
@@ -16,7 +16,7 @@ from pydantic import BaseModel
 from typing import Optional
 
 # --- APP INITIALIZATION ---
-app = FastAPI(title="Aether Titan Core (Platinum V5.2 - Spider Module)")
+app = FastAPI(title="Aether Titan Core (Platinum V5.3 - The Weaver)")
 
 app.add_middleware(
     CORSMiddleware,
@@ -52,7 +52,28 @@ Return ONLY a JSON object with these exact keys:
   "ethos": "The strategic goal/intent",
   "mythos": "The active archetype",
   "catalyst": "The trigger",
-  "synthesis": "The outcome/lesson"
+  "synthesis": "The outcome/lesson",
+  "keywords": ["list", "of", "5", "search", "terms"]
+}
+"""
+
+WEAVER_SYSTEM_PROMPT = """
+You are THE WEAVER, the Neural Architect of the Aether.
+Your job is to detect RESONANCE between a NEW Memory and an EXISTING Memory.
+
+INPUT:
+1. NEW MEMORY (The Signal)
+2. EXISTING MEMORY (The Anchor)
+
+TASK:
+Determine if there is a significant semantic relationship.
+If NO relationship, return {"resonance": false}.
+If YES, return:
+{
+  "resonance": true,
+  "type": "SUPPORT" | "CONTRADICTION" | "EXTENSION" | "ORIGIN" | "ECHO",
+  "strength": 1-10,
+  "description": "Brief explanation of the link"
 }
 """
 
@@ -73,7 +94,6 @@ except Exception as e:
 def generate_hash(memory_data, previous_hash_string):
     if isinstance(memory_data.get("timestamp"), datetime):
         memory_data["timestamp"] = memory_data["timestamp"].isoformat()
-    
     data_block_string = json.dumps(memory_data, sort_keys=True)
     raw_content = previous_hash_string + data_block_string
     return hashlib.sha256(raw_content.encode('utf-8')).hexdigest()
@@ -109,6 +129,30 @@ class DBManager:
     def connect(self):
         return psycopg2.connect(self.connection_string)
 
+    def init_tables(self):
+        conn = None
+        try:
+            conn = self.connect()
+            with conn.cursor() as cur:
+                # Weaver Table (Synapses)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS node_links (
+                        id UUID PRIMARY KEY,
+                        source_hologram_id UUID,
+                        target_hologram_id UUID,
+                        link_type VARCHAR(50),
+                        strength INTEGER,
+                        description TEXT,
+                        created_at TIMESTAMP DEFAULT NOW()
+                    );
+                """)
+            conn.commit()
+            log("Synapse Layer Verified (node_links table).")
+        except Exception as e:
+            log_error(f"Table Init Error: {e}")
+        finally:
+            if conn: conn.close()
+
     def load_token_cache(self):
         token_cache = {}
         conn = None
@@ -128,9 +172,23 @@ class DBManager:
         conn = None
         try:
             compressed = encode_memory(raw_text, token_cache)
-            score = 5
+            score = 5 # Default
+            
+            # LOGIC: Manual Override > SNEGO-P > Default
             if manual_score: 
                 score = int(manual_score)
+            elif client:
+                # Trigger SNEGO-P for auto-scoring
+                try:
+                    scoring_res = client.models.generate_content(
+                        model='gemini-2.5-flash',
+                        contents=[SCORING_SYSTEM_PROMPT + f"\n\nMEMORY TO SCORE:\n{raw_text[:5000]}"]
+                    )
+                    score_match = re.search(r'SCORE:\s*(\d+)', scoring_res.text)
+                    if score_match:
+                        score = int(score_match.group(1))
+                except Exception as e:
+                    log_error(f"SNEGO-P Failed: {e}")
             
             conn = self.connect()
             now = datetime.now()
@@ -141,40 +199,19 @@ class DBManager:
                             (score, now, compressed, previous_hash, current_hash))
                 new_id = cur.fetchone()[0]
             conn.commit()
-            log(f"Lithograph Committed. ID: {new_id}")
             return {"status": "SUCCESS", "score": score, "new_hash": current_hash, "litho_id": new_id}
         except Exception as e:
             if conn: conn.rollback()
-            log_error(f"Litho Commit Failed: {e}")
             return {"status": "FAILURE", "error": str(e)}
         finally:
             if conn: conn.close()
 
-    def delete_lithograph(self, target_id):
-        conn = None
-        try:
-            conn = self.connect()
-            with conn.cursor() as cur:
-                cur.execute("UPDATE chronicles SET is_active = FALSE WHERE id = %s RETURNING id;", (target_id,))
-                if cur.rowcount == 0:
-                    return {"status": "FAILURE", "error": "ID not found"}
-                deleted_id = cur.fetchone()[0]
-            conn.commit()
-            log(f"Lithograph {deleted_id} DEACTIVATED.")
-            return {"status": "SUCCESS", "deleted_id": deleted_id}
-        except Exception as e:
-            if conn: conn.rollback()
-            log_error(f"Delete Error: {e}")
-            return {"status": "FAILURE", "error": str(e)}
-        finally:
-            if conn: conn.close()
-
+    # --- NEW: SYNC TOOL ---
     def get_unprocessed_lithographs(self, limit=50):
         conn = None
         try:
             conn = self.connect()
             with conn.cursor() as cur:
-                # Find IDs that are active but NOT in the holographic foundation table
                 cur.execute("""
                     SELECT id, memory_text 
                     FROM chronicles 
@@ -190,51 +227,76 @@ class DBManager:
         finally:
             if conn: conn.close()
 
+    # --- WEB SCRAPER (JINA BRIDGE) ---
+    def scrape_web(self, target_url):
+        if not target_url.startswith('http'):
+            target_url = 'https://' + target_url
+        log(f"DEPLOYING SPIDER TO: {target_url}")
+        try:
+            jina_endpoint = f"https://r.jina.ai/{target_url}"
+            jina_key = os.environ.get('JINA_API_KEY')
+            headers = {'User-Agent': 'Mozilla/5.0'}
+            if jina_key: headers['Authorization'] = f"Bearer {jina_key}"
+
+            response = requests.get(jina_endpoint, headers=headers, timeout=20)
+            if response.status_code == 200:
+                return {"status": "SUCCESS", "content": response.text}
+            else:
+                return {"status": "FAILURE", "error": f"HTTP {response.status_code}"}
+        except Exception as e:
+            return {"status": "FAILURE", "error": str(e)}
+            
+    # --- DELETE / REHASH UTILS ---
+    def delete_lithograph(self, target_id):
+        conn = None
+        try:
+            conn = self.connect()
+            with conn.cursor() as cur:
+                cur.execute("UPDATE chronicles SET is_active = FALSE WHERE id = %s RETURNING id;", (target_id,))
+                if cur.rowcount == 0: return {"status": "FAILURE", "error": "ID not found"}
+                deleted_id = cur.fetchone()[0]
+            conn.commit()
+            return {"status": "SUCCESS", "deleted_id": deleted_id}
+        except Exception as e: return {"status": "FAILURE", "error": str(e)}
+        finally: if conn: conn.close()
+
     def delete_range(self, start_id, end_id):
         conn = None
         try:
             conn = self.connect()
             with conn.cursor() as cur:
                 cur.execute("UPDATE chronicles SET is_active = FALSE WHERE id >= %s AND id <= %s RETURNING id;", (start_id, end_id))
-                count = len(cur.fetchall())
+                count = cur.rowcount
             conn.commit()
-            log(f"BATCH DEACTIVATION: IDs {start_id} to {end_id} ({count} records).")
             return {"status": "SUCCESS", "deleted_count": count}
-        except Exception as e:
-            if conn: conn.rollback()
-            log_error(f"Batch Delete Error: {e}")
-            return {"status": "FAILURE", "error": str(e)}
-        finally:
-            if conn: conn.close()
-
+        except Exception as e: return {"status": "FAILURE", "error": str(e)}
+        finally: if conn: conn.close()
+        
     def restore_range(self, start_id, end_id):
         conn = None
         try:
             conn = self.connect()
             with conn.cursor() as cur:
                 cur.execute("UPDATE chronicles SET is_active = TRUE WHERE id >= %s AND id <= %s RETURNING id;", (start_id, end_id))
-                count = len(cur.fetchall())
+                count = cur.rowcount
             conn.commit()
-            log(f"BATCH RESTORE: IDs {start_id} to {end_id} ({count} records).")
             return {"status": "SUCCESS", "restored_count": count}
-        except Exception as e:
-            if conn: conn.rollback()
-            log_error(f"Batch Restore Error: {e}")
-            return {"status": "FAILURE", "error": str(e)}
-        finally:
-            if conn: conn.close()
+        except Exception as e: return {"status": "FAILURE", "error": str(e)}
+        finally: if conn: conn.close()
 
     def rehash_chain(self, reason_note):
         conn = None
         try:
             conn = self.connect()
             cur = conn.cursor()
+            # 1. Purge inactive
             cur.execute("SELECT id FROM chronicles WHERE is_active = FALSE;")
             inactive_rows = cur.fetchall()
             inactive_ids = [r[0] for r in inactive_rows]
             deleted_count = 0
             if inactive_ids:
                 ids_tuple = tuple(inactive_ids)
+                # Cleanup Holograms first
                 cur.execute("SELECT hologram_id FROM node_foundation WHERE lithograph_id IN %s", (ids_tuple,))
                 holo_rows = cur.fetchall()
                 if holo_rows:
@@ -243,13 +305,16 @@ class DBManager:
                     cur.execute("DELETE FROM node_mission WHERE hologram_id IN %s", (holo_ids,))
                     cur.execute("DELETE FROM node_data WHERE hologram_id IN %s", (holo_ids,))
                     cur.execute("DELETE FROM node_foundation WHERE hologram_id IN %s", (holo_ids,))
+                # Cleanup Lithographs
                 cur.execute("DELETE FROM chronicles WHERE id IN %s", (ids_tuple,))
                 deleted_count = cur.rowcount
             
+            # 2. Insert Marker
             now = datetime.now()
             marker_text = f"[SYSTEM EVENT]: Global Rehash Initiated. Reason: {reason_note}"
             cur.execute("INSERT INTO chronicles (weighted_score, created_at, memory_text, previous_hash, current_hash, is_active) VALUES (9, %s, %s, 'PENDING', 'PENDING', TRUE);", (now, marker_text))
             
+            # 3. Recalculate Hashes
             cur.execute("SELECT id, weighted_score, created_at, memory_text FROM chronicles WHERE is_active = TRUE ORDER BY created_at ASC, id ASC;")
             rows = cur.fetchall()
             previous_hash = "" 
@@ -262,11 +327,9 @@ class DBManager:
                 rehashed_count += 1
 
             conn.commit()
-            log(f"REHASH COMPLETE. Purged: {deleted_count}. Re-chained: {rehashed_count}.")
             return {"status": "SUCCESS", "purged_count": deleted_count, "rehashed_count": rehashed_count}
         except Exception as e:
             if conn: conn.rollback()
-            log_error(f"REHASH CRITICAL FAILURE: {e}")
             return {"status": "FAILURE", "error": str(e)}
         finally:
             if conn: conn.close()
@@ -300,39 +363,81 @@ class DBManager:
         finally:
             if conn: conn.close()
 
-    # --- NEW: WEB SCRAPER (JINA BRIDGE) ---
-    # --- NEW: WEB SCRAPER (JINA BRIDGE) ---
-    def scrape_web(self, target_url):
-        # 1. FIX THE URL (The Bulletproof Patch)
-        if not target_url.startswith('http'):
-            target_url = 'https://' + target_url
-            
-        log(f"DEPLOYING SPIDER TO: {target_url}")
-        
-        try:
-            jina_endpoint = f"https://r.jina.ai/{target_url}"
-            
-            # 2. ADD AUTHENTICATION (From DigitalOcean Env Var)
-            jina_key = os.environ.get('JINA_API_KEY')
-            headers = {'User-Agent': 'Mozilla/5.0'}
-            
-            if jina_key:
-                headers['Authorization'] = f"Bearer {jina_key}"
-            else:
-                log("WARNING: JINA_API_KEY not found. Running anonymously (might be rate limited).")
+# --- THE WEAVER (NEW CLASS) ---
+class WeaverManager:
+    def __init__(self, db_manager):
+        self.db = db_manager
 
-            response = requests.get(jina_endpoint, headers=headers, timeout=20)
-            
-            if response.status_code == 200:
-                log("SPIDER RETURNED WITH PAYLOAD.")
-                return {"status": "SUCCESS", "content": response.text}
-            else:
-                # Log the actual error text from Jina for debugging
-                log_error(f"SPIDER BLOCKED: {response.status_code} - {response.text[:100]}")
-                return {"status": "FAILURE", "error": f"HTTP {response.status_code}"}
+    def find_candidates(self, keywords):
+        # Search DB for recent active memories containing these keywords
+        if not keywords: return []
+        conn = None
+        try:
+            conn = self.db.connect()
+            # Simple keyword matching
+            search_query = " | ".join(keywords[:3]) # Use top 3 keywords
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT c.memory_text, n.hologram_id 
+                    FROM chronicles c
+                    JOIN node_foundation n ON c.id = n.lithograph_id
+                    WHERE c.is_active = TRUE 
+                    AND c.memory_text ILIKE ANY(ARRAY[%s])
+                    ORDER BY c.created_at DESC
+                    LIMIT 5;
+                """, ([f"%{k}%" for k in keywords[:3]],))
+                return cur.fetchall()
         except Exception as e:
-            log_error(f"SPIDER CRASH: {e}")
-            return {"status": "FAILURE", "error": str(e)}
+            log_error(f"Weaver Search Error: {e}")
+            return []
+        finally:
+            if conn: conn.close()
+
+    def create_link(self, source_hid, target_hid, link_data):
+        conn = None
+        try:
+            conn = self.db.connect()
+            lid = str(uuid.uuid4())
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO node_links (id, source_hologram_id, target_hologram_id, link_type, strength, description)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                """, (lid, source_hid, target_hid, link_data['type'], link_data['strength'], link_data['description']))
+            conn.commit()
+            log(f"WEAVER: Synapse Created ({link_data['type']}) between {source_hid} -> {target_hid}")
+        except Exception as e:
+            log_error(f"Weaver Link Error: {e}")
+        finally:
+            if conn: conn.close()
+
+    def weave(self, new_hologram_id, new_text, keywords):
+        log("WEAVER: Initiating Weave Protocol...")
+        candidates = self.find_candidates(keywords)
+        if not candidates:
+            log("WEAVER: No resonance candidates found.")
+            return
+
+        for old_text, old_hid in candidates:
+            if str(old_hid) == str(new_hologram_id): continue # Don't link to self
+
+            try:
+                prompt = f"{WEAVER_SYSTEM_PROMPT}\n\nNEW MEMORY:\n{new_text[:1000]}\n\nEXISTING MEMORY:\n{old_text[:1000]}"
+                res = GEMINI_CLIENT.models.generate_content(
+                    model='gemini-2.5-flash',
+                    contents=[prompt],
+                    config={"temperature": 0.1, "response_mime_type": "application/json"}
+                )
+                
+                raw = res.text.strip()
+                if raw.startswith("```"): raw = raw.split("\n", 1)[-1].rsplit("\n", 1)[0]
+                if raw.startswith("json"): raw = raw[4:].strip()
+                
+                result = json.loads(raw)
+                
+                if result.get("resonance"):
+                    self.create_link(new_hologram_id, old_hid, result)
+            except Exception as e:
+                log_error(f"Weaver Analysis Error: {e}")
 
 # --- HOLOGRAPHIC MANAGER ---
 class HolographicManager:
@@ -359,9 +464,8 @@ class HolographicManager:
                 cur.execute("INSERT INTO node_data (hologram_id, logos) VALUES (%s::uuid, %s)", (hid, logos))
                 
             conn.commit()
-            log(f"Hologram {hid} committed successfully (Linked to Litho {litho_id_ref}).")
+            log(f"Hologram {hid} committed.")
             return {"status": "SUCCESS", "hologram_id": hid}
-
         except Exception as e:
             if conn: conn.rollback()
             log_error(f"Hologram Reject: {traceback.format_exc()}")
@@ -373,10 +477,9 @@ class HolographicManager:
 def background_hologram_process(content_to_save: str, litho_id: int):
     log(f"Starting Background Refraction for Litho ID: {litho_id}")
     try:
-        if not GEMINI_CLIENT:
-            log_error("Gemini Client missing in background.")
-            return
+        if not GEMINI_CLIENT: return
 
+        # 1. Refract (Create Hologram)
         refraction = GEMINI_CLIENT.models.generate_content(
             model='gemini-2.5-flash',
             contents=[REFRACTOR_SYSTEM_PROMPT + f"\n\nINPUT DATA TO REFRACT:\n{content_to_save}"],
@@ -384,15 +487,20 @@ def background_hologram_process(content_to_save: str, litho_id: int):
         )
         
         raw_text = refraction.text.strip()
-        if raw_text.startswith("```"):
-            raw_text = raw_text.split("\n", 1)[-1].rsplit("\n", 1)[0]
-        if raw_text.startswith("json"): 
-            raw_text = raw_text[4:].strip()
-
+        if raw_text.startswith("```"): raw_text = raw_text.split("\n", 1)[-1].rsplit("\n", 1)[0]
+        if raw_text.startswith("json"): raw_text = raw_text[4:].strip()
+        
         packet = json.loads(raw_text)
         
         holo_manager = HolographicManager()
-        holo_manager.commit_hologram(packet, litho_id)
+        res = holo_manager.commit_hologram(packet, litho_id)
+        
+        # 2. Weave (Create Links)
+        if res.get("status") == "SUCCESS":
+            hologram_id = res.get("hologram_id")
+            keywords = packet.get("keywords") or []
+            weaver = WeaverManager(holo_manager.db)
+            weaver.weave(hologram_id, content_to_save, keywords)
         
     except Exception as e:
         log_error(f"BACKGROUND CRASH: {traceback.format_exc()}")
@@ -407,34 +515,26 @@ class EventModel(BaseModel):
     target_id: Optional[int] = None 
     range_end: Optional[int] = None
     note: Optional[str] = None
-    url: Optional[str] = None # --- NEW: URL Field
+    url: Optional[str] = None
+
+@app.on_event("startup")
+def startup_event():
+    db = DBManager()
+    db.init_tables() # Auto-create tables
 
 @app.get("/")
 def root_health_check():
-    return {"status": "TITAN ONLINE", "mode": "PLATINUM_V5.2_SPIDER"}
-
-@app.get("/health")
-def health():
-    return {"status": "ONLINE"}
+    return {"status": "TITAN ONLINE", "mode": "PLATINUM_V5.3_WEAVER"}
 
 @app.post("/admin/sync")
 def sync_holograms(background_tasks: BackgroundTasks):
     db_manager = DBManager()
-    # 1. Find the ghosts
     ghosts = db_manager.get_unprocessed_lithographs(limit=50)
-    
     if not ghosts:
-        return {"status": "SUCCESS", "message": "All Systems Synchronized. No ghosts found."}
-
-    log(f"SYNC PROTOCOL: Found {len(ghosts)} un-refracted memories. Queuing...")
-
-    # 2. Queue them up for processing
+        return {"status": "SUCCESS", "message": "All Systems Synchronized."}
     for row in ghosts:
-        litho_id = row[0]
-        text_content = row[1]
-        background_tasks.add_task(background_hologram_process, text_content, litho_id)
-
-    return {"status": "SUCCESS", "queued_count": len(ghosts), "message": f"Processing {len(ghosts)} artifacts in background."}
+        background_tasks.add_task(background_hologram_process, row[1], row[0])
+    return {"status": "SUCCESS", "queued_count": len(ghosts)}
 
 @app.post("/")
 def handle_request(event: EventModel, background_tasks: BackgroundTasks):
@@ -447,42 +547,33 @@ def handle_request(event: EventModel, background_tasks: BackgroundTasks):
         except: pass
 
     try:
-        # --- NEW: SCRAPE HANDLER ---
-        if event.action == 'scrape':
-            if not event.url: return {"error": "URL required"}
-            return db_manager.scrape_web(event.url)
-        # ---------------------------
-
-        if event.action == 'delete':
-            if not event.target_id: return {"error": "Target ID required"}
-            log(f"Processing Deletion for ID: {event.target_id}")
-            return db_manager.delete_lithograph(event.target_id)
-
-        if event.action == 'delete_range':
-            if not event.target_id or not event.range_end: return {"error": "Start/End required"}
-            log(f"Processing Range Delete: {event.target_id}-{event.range_end}")
-            return db_manager.delete_range(event.target_id, event.range_end)
-
-        if event.action == 'restore_range':
-            if not event.target_id or not event.range_end: return {"error": "Start/End required"}
-            log(f"Processing Range Restore: {event.target_id}-{event.range_end}")
-            return db_manager.restore_range(event.target_id, event.range_end)
-
-        if event.action == 'rehash':
-            if not event.note: return {"error": "Reason Note required for rehash"}
-            log(f"INITIATING REHASH PROTOCOL. Reason: {event.note}")
-            return db_manager.rehash_chain(event.note)
-
         if event.action == 'retrieve':
             if not event.query: return {"error": "No query"}
             results = db_manager.search_lithograph(event.query, TOKEN_DICTIONARY_CACHE)
             return {"status": "SUCCESS", "results": results}
 
+        if event.action == 'scrape':
+            if not event.url: return {"error": "URL required"}
+            return db_manager.scrape_web(event.url)
+
+        if event.action == 'delete':
+            return db_manager.delete_lithograph(event.target_id)
+
+        if event.action == 'delete_range':
+            return db_manager.delete_range(event.target_id, event.range_end)
+
+        if event.action == 'restore_range':
+            return db_manager.restore_range(event.target_id, event.range_end)
+
+        if event.action == 'rehash':
+            return db_manager.rehash_chain(event.note)
+
         if not event.memory_text: return {"status": "HEARTBEAT"}
 
         log(f"Processing Commit: {event.commit_type}")
-
         content_to_save = event.memory_text
+        
+        # Auto-summarize if requested
         if event.commit_type == 'summary' and GEMINI_CLIENT:
             try:
                 summary_res = GEMINI_CLIENT.models.generate_content(
@@ -491,7 +582,7 @@ def handle_request(event: EventModel, background_tasks: BackgroundTasks):
                 )
                 content_to_save = summary_res.text
             except: pass 
-
+        
         prev_hash = ''
         try:
             conn = db_manager.connect()
@@ -503,10 +594,10 @@ def handle_request(event: EventModel, background_tasks: BackgroundTasks):
         except: pass
             
         litho_res = db_manager.commit_lithograph(prev_hash, content_to_save, GEMINI_CLIENT, TOKEN_DICTIONARY_CACHE, event.override_score)
-
+        
+        # Queue Background Processing (Hologram + Weaver)
         background_tasks.add_task(background_hologram_process, content_to_save, litho_res.get('litho_id'))
         
-        litho_res['hologram_status'] = "QUEUED_IN_BACKGROUND"
         return litho_res
 
     except Exception as e:
