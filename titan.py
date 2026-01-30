@@ -703,7 +703,47 @@ class HolographicManager:
 
 # --- SYNCHRONOUS PROCESSORS ---
 
-def process_hologram_sync(content_to_save: str, litho_id: int):
+# --- Updated Refraction Sync with Significance Gate ---
+
+def process_hologram_sync(content_to_save: str, litho_id: int, gate_threshold: int = 5):
+    log(f"Starting SYNC Refraction for Litho ID: {litho_id}")
+    try:
+        if not GEMINI_CLIENT: return False
+        
+        db = DBManager()
+        token_cache = db.load_token_cache()
+        decoded_content = decode_memory(content_to_save, token_cache)
+
+        # 1. REFRACT (The Metadata Generation)
+        refraction = generate_with_fallback(
+            GEMINI_CLIENT,
+            contents=[f"INPUT DATA TO REFRACT:\n{decoded_content[:10000]}"],
+            system_prompt=REFRACTOR_SYSTEM_PROMPT,
+            config=types.GenerateContentConfig(temperature=0.1, response_mime_type="application/json")
+        )
+        
+        data = json.loads(refraction.text)
+        score = data.get("weighted_score", 5) # Default to 5 if missing
+        
+        # 2. SAVE THE HOLOGRAPHIC DATA
+        # (This saves the summary/tags regardless of the gate)
+        new_hid = db.save_holographic_node(litho_id, data)
+
+        # 3. THE SIGNIFICANCE GATE
+        if score < gate_threshold:
+            log(f"⚠️ GATE ACTIVE: Score {score} < {gate_threshold}. Skipping expensive Weaver resonance.")
+            return True # Successfully saved, but didn't weave
+            
+        # 4. WEAVE (The Expensive Part)
+        log(f"🔥 SIGNIFICANT MEMORY ({score}): Engaging Weaver for Litho ID {litho_id}")
+        weaver = WeaverManager(db)
+        weaver.weave(new_hid, decoded_content, data.get("keywords", []))
+        
+        return True
+    except Exception as e:
+        log(f"❌ Refraction/Weave Failed: {e}")
+        return False
+    
     log(f"Starting SYNC Refraction for Litho ID: {litho_id}")
     try:
         if not GEMINI_CLIENT: return False
@@ -999,23 +1039,30 @@ def get_graph_data():
         if conn: conn.close()
 
 @app.post("/admin/sync")
-def sync_holograms():
-    # NOTE: BackgroundTasks removed. This is now BLOCKING/SYNCHRONOUS.
+def sync_holograms(payload: dict = None):
+    # 1. Grab the threshold from the UI. If none sent, default to 5.
+    threshold = payload.get("gate_threshold", 5) if payload else 5
+    
     db_manager = DBManager()
     
     # Priority 1: Find Orphans (Ghosts)
-    ghosts = db_manager.get_orphaned_lithographs(limit=10) # Small batch for sync
+    ghosts = db_manager.get_orphaned_lithographs(limit=10) 
+    
     if ghosts:
         count = 0
         for row in ghosts:
             try:
-                success = process_hologram_sync(row[1], row[0])
+                # 2. Pass the threshold into the process function
+                success = process_hologram_sync(row[1], row[0], gate_threshold=threshold)
                 if success: count += 1
             except Exception as e:
-                # If ALL models failed, break loop
                 if "Titan Shield Report" in str(e): 
                     return {"status": "RATE_LIMIT", "message": "ALL API QUOTAS EXHAUSTED"}
+        
         return {"status": "SUCCESS", "queued_count": count, "mode": "ORPHAN_REPAIR"}
+    
+    # (Optional: Repeat this logic for your RETRO_WEAVE section if you have one)
+    return {"status": "SUCCESS", "queued_count": 0, "mode": "IDLE"}
     
     # Priority 2: Find Unwoven (Zombies)
     zombies = db_manager.get_unwoven_holograms(limit=10) # Small batch
