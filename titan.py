@@ -920,7 +920,6 @@ def get_graph_data():
 
 @app.post("/admin/sync")
 def sync_holograms(payload: dict = None):
-    # 1. Grab threshold
     threshold = payload.get("gate_threshold", 5) if payload else 5
     db_manager = DBManager()
     
@@ -934,22 +933,24 @@ def sync_holograms(payload: dict = None):
                 if success: count += 1
             except Exception as e:
                 if "Titan Shield Report" in str(e): return {"status": "RATE_LIMIT", "message": "API EXHAUSTED"}
+        
+        # WE ONLY RETURN HERE IF WE ACTUALLY FOUND AND PROCESSED GHOSTS
         return {"status": "SUCCESS", "queued_count": count, "mode": "ORPHAN_REPAIR"}
     
     # Priority 2: Unwoven (Zombies)
+    # This only runs if NO ghosts were found.
     zombies = db_manager.get_unwoven_holograms(limit=10) 
     if zombies:
         count = 0
         for row in zombies:
             try:
-                # Note: Zombies don't need the gate check as they already exist in Holographic Core
                 success = process_retro_weave_sync(row[1], row[0])
                 if success: count += 1
             except Exception as e:
                 if "Titan Shield Report" in str(e): return {"status": "RATE_LIMIT", "message": "API EXHAUSTED"}
         return {"status": "SUCCESS", "queued_count": count, "mode": "RETRO_WEAVE"}
 
-    # 3. Final IDLE state if nothing found
+    # Final IDLE state - ONLY if both lists are empty.
     return {"status": "SUCCESS", "queued_count": 0, "mode": "IDLE"}
 
 @app.post("/")
