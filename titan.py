@@ -468,8 +468,118 @@ class DBManager:
         finally: 
             if conn: conn.close()
 
-# --- THE WEAVER ---
+# --- THE WEAVER (BATCH UPGRADE) ---
 class WeaverManager:
+    def __init__(self, db_manager):
+        self.db = db_manager
+
+    def find_candidates(self, keywords):
+        if not keywords: return []
+        conn = None
+        try:
+            conn = self.db.connect()
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT c.memory_text, n.hologram_id 
+                    FROM chronicles c
+                    JOIN node_foundation n ON c.id = n.lithograph_id
+                    WHERE c.is_active = TRUE 
+                    AND c.memory_text ILIKE ANY(ARRAY[%s])
+                    ORDER BY c.created_at DESC
+                    LIMIT 5;
+                """, ([f"%{k}%" for k in keywords[:3]],))
+                return cur.fetchall()
+        except: return []
+        finally: 
+            if conn: conn.close()
+
+    def create_link(self, source_hid, target_hid, link_data):
+        conn = None
+        try:
+            conn = self.db.connect()
+            lid = str(uuid.uuid4())
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO node_links (id, source_hologram_id, target_hologram_id, link_type, strength, description)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                """, (lid, source_hid, target_hid, link_data['type'], link_data['strength'], link_data['description']))
+            conn.commit()
+            log(f"WEAVER: Synapse Created ({link_data['type']}) between {source_hid} -> {target_hid}")
+        except Exception as e:
+            log_error(f"Weaver Link Error: {e}")
+        finally: 
+            if conn: conn.close()
+
+    def weave(self, new_hologram_id, new_text, keywords):
+        log(f"WEAVER: Scanning for resonance for node {new_hologram_id}...")
+        candidates = self.find_candidates(keywords)
+        if not candidates:
+            log("WEAVER: No resonance candidates found.")
+            return
+
+        # 1. PREPARE BATCH PROMPT
+        candidate_block = ""
+        valid_candidates = {} 
+        
+        for i, (old_text, old_hid) in enumerate(candidates):
+            if str(old_hid) == str(new_hologram_id): continue
+            
+            # Map index to ID so we can look it up later
+            idx_key = f"CANDIDATE_{i+1}"
+            valid_candidates[idx_key] = str(old_hid)
+            
+            candidate_block += f"\n--- {idx_key} ---\n{old_text[:500]}\n"
+
+        if not valid_candidates: return
+
+        prompt = f"""
+        ANALYSIS MODE: DEEP RESONANCE CHECK
+        
+        TARGET MEMORY:
+        {new_text[:1000]}
+        
+        POTENTIAL CONNECTIONS:
+        {candidate_block}
+        
+        INSTRUCTIONS:
+        Analyze the TARGET MEMORY against EACH Candidate.
+        Return a JSON OBJECT where keys are the Candidate IDs (e.g., "CANDIDATE_1") and values are the resonance details.
+        
+        FORMAT:
+        {{
+          "CANDIDATE_1": {{ "resonance": true, "type": "SUPPORT", "strength": 8, "description": "..." }},
+          "CANDIDATE_2": {{ "resonance": false }}
+        }}
+        """
+
+        try:
+            # 2. SINGLE API CALL (The Speed Boost)
+            res = generate_with_fallback(
+                GEMINI_CLIENT,
+                contents=[prompt],
+                # We use a simpler system prompt since the user prompt is heavy
+                system_prompt="You are THE WEAVER. Analyze semantic relationships between text blocks. Return ONLY JSON.",
+                config=types.GenerateContentConfig(
+                    temperature=0.1, 
+                    response_mime_type="application/json"
+                )
+            )
+            
+            raw = res.text.strip()
+            if raw.startswith("`" * 3): raw = raw.split("\n", 1)[-1].rsplit("\n", 1)[0]
+            if raw.startswith("json"): raw = raw[4:].strip()
+            
+            results = json.loads(raw)
+            
+            # 3. PROCESS RESULTS
+            for candidate_key, data in results.items():
+                if data.get("resonance") and candidate_key in valid_candidates:
+                    target_hid = valid_candidates[candidate_key]
+                    self.create_link(new_hologram_id, target_hid, data)
+
+        except Exception as e:
+            log_error(f"Weaver Batch Error: {e}")
+
     def __init__(self, db_manager):
         self.db = db_manager
 
@@ -862,7 +972,7 @@ def sync_holograms():
     db_manager = DBManager()
     
     # Priority 1: Find Orphans (Ghosts)
-    ghosts = db_manager.get_orphaned_lithographs(limit=2) # Small batch for sync
+    ghosts = db_manager.get_orphaned_lithographs(limit=10) # Small batch for sync
     if ghosts:
         count = 0
         for row in ghosts:
@@ -876,7 +986,7 @@ def sync_holograms():
         return {"status": "SUCCESS", "queued_count": count, "mode": "ORPHAN_REPAIR"}
     
     # Priority 2: Find Unwoven (Zombies)
-    zombies = db_manager.get_unwoven_holograms(limit=2) # Small batch
+    zombies = db_manager.get_unwoven_holograms(limit=10) # Small batch
     if zombies:
         count = 0
         for row in zombies:
