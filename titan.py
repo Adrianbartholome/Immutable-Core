@@ -681,15 +681,24 @@ def get_graph_data():
         db_manager = DBManager()
         conn = db_manager.connect()
         with conn.cursor() as cur:
-            # 1. FETCH NODES (VIP LIST)
-            # Sort by Score (Gravity) and Recency (Context)
+            # 1. FETCH NODES (Hub-First Priority)
+            # We order by LINK COUNT first, then SCORE.
+            # This ensures the graph is filled with structure, not isolated dots.
             cur.execute("""
-                SELECT h.hologram_id, c.weighted_score, c.created_at, n_data.logos 
+                WITH LinkCounts AS (
+                    SELECT h.hologram_id, 
+                           (SELECT COUNT(*) FROM node_links 
+                            WHERE source_hologram_id = h.hologram_id 
+                               OR target_hologram_id = h.hologram_id) as link_count
+                    FROM node_foundation h
+                )
+                SELECT h.hologram_id, c.weighted_score, c.created_at, n_data.logos, lc.link_count
                 FROM node_foundation h
                 JOIN chronicles c ON h.lithograph_id = c.id
                 LEFT JOIN node_data n_data ON h.hologram_id = n_data.hologram_id
+                JOIN LinkCounts lc ON h.hologram_id = lc.hologram_id
                 WHERE c.is_active = TRUE
-                ORDER BY c.weighted_score DESC, c.created_at DESC
+                ORDER BY lc.link_count DESC, c.weighted_score DESC
                 LIMIT 2000; 
             """)
             nodes_rows = cur.fetchall()
