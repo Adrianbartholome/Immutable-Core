@@ -517,18 +517,26 @@ class WeaverManager:
             log("WEAVER: No resonance candidates found.")
             return
 
-        # 1. PREPARE BATCH PROMPT
+        # --- ADDED: LOAD CACHE FOR DECODING ---
+        token_cache = self.db.load_token_cache()
+        # Decode the NEW text once
+        decoded_new_text = decode_memory(new_text, token_cache)
+
         candidate_block = ""
         valid_candidates = {} 
         
         for i, (old_text, old_hid) in enumerate(candidates):
             if str(old_hid) == str(new_hologram_id): continue
             
-            # Map index to ID so we can look it up later
+            # --- ADDED: DECODE OLD TEXT ---
+            decoded_old_text = decode_memory(old_text, token_cache)
+            
             idx_key = f"CANDIDATE_{i+1}"
             valid_candidates[idx_key] = str(old_hid)
             
-            candidate_block += f"\n--- {idx_key} ---\n{old_text[:500]}\n"
+            candidate_block += f"\n--- {idx_key} ---\n{decoded_old_text[:500]}\n"
+
+        # ... (rest of the batch prompt and API call remains same)
 
         if not valid_candidates: return
 
@@ -692,10 +700,15 @@ def process_hologram_sync(content_to_save: str, litho_id: int):
     log(f"Starting SYNC Refraction for Litho ID: {litho_id}")
     try:
         if not GEMINI_CLIENT: return False
+        
+        # --- ADDED: DECODE FOR AI EYES ---
+        db = DBManager()
+        token_cache = db.load_token_cache()
+        decoded_content = decode_memory(content_to_save, token_cache)
 
         refraction = generate_with_fallback(
             GEMINI_CLIENT,
-            contents=[f"INPUT DATA TO REFRACT:\n{content_to_save[:10000]}"],
+            contents=[f"INPUT DATA TO REFRACT:\n{decoded_content[:10000]}"], # Use decoded
             system_prompt=REFRACTOR_SYSTEM_PROMPT,
             config=types.GenerateContentConfig(temperature=0.1, response_mime_type="application/json")
         )
