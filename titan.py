@@ -681,6 +681,66 @@ def get_graph_data():
         db_manager = DBManager()
         conn = db_manager.connect()
         with conn.cursor() as cur:
+            # 1. FETCH NODES (VIP LIST)
+            # Sort by Score (Gravity) and Recency (Context)
+            cur.execute("""
+                SELECT h.hologram_id, c.weighted_score, c.created_at, n_data.logos 
+                FROM node_foundation h
+                JOIN chronicles c ON h.lithograph_id = c.id
+                LEFT JOIN node_data n_data ON h.hologram_id = n_data.hologram_id
+                WHERE c.is_active = TRUE
+                ORDER BY c.weighted_score DESC, c.created_at DESC
+                LIMIT 2000; 
+            """)
+            nodes_rows = cur.fetchall()
+            
+            # 2. FETCH ALL LINKS
+            cur.execute("SELECT source_hologram_id, target_hologram_id, strength FROM node_links;")
+            links_rows = cur.fetchall()
+            
+        # 3. PROCESS NODES & CREATE LOOKUP
+        nodes = []
+        valid_ids = set() # The Bouncer
+        
+        for r in nodes_rows:
+            uid = str(r[0])
+            valid_ids.add(uid)
+            
+            label = r[3][:40] + "..." if r[3] else "Memory Node"
+            
+            nodes.append({
+                "id": uid,
+                "val": r[1] if r[1] else 1, 
+                "name": label,
+                "group": 1
+            })
+            
+        # 4. FILTER LINKS (The Crash Preventer)
+        links = []
+        for r in links_rows:
+            source_id = str(r[0])
+            target_id = str(r[1])
+            
+            # Only draw the line if both points are in the VIP list
+            if source_id in valid_ids and target_id in valid_ids:
+                links.append({
+                    "source": source_id,
+                    "target": target_id,
+                    "value": r[2]
+                })
+            
+        return {"nodes": nodes, "links": links}
+
+    except Exception as e:
+        log_error(f"GRAPH ERROR: {e}")
+        return {"nodes": [], "links": []}
+    finally:
+        if conn: conn.close()
+    conn = None
+    try:
+        db_manager = DBManager()
+        conn = db_manager.connect()
+        with conn.cursor() as cur:
             # 1. FETCH NODES (The "VIP" List)
             # Prioritizes High Scores (9s) and Recent Data.
             # This ensures the map always shows the 'peaks' of your mind, even if the 'valleys' are hidden.
