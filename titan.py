@@ -674,6 +674,57 @@ def get_shield_status():
         "primary_viable": SHIELD.is_viable(MODEL_CASCADE[0])
     }
 
+@app.get("/graph")
+def get_graph_data():
+    conn = None
+    try:
+        db_manager = DBManager()
+        conn = db_manager.connect()
+        with conn.cursor() as cur:
+            # 1. FETCH NODES (The Dots)
+            # We join 'node_foundation' (IDs) with 'chronicles' (Score/Date) and 'node_data' (Summary)
+            cur.execute("""
+                SELECT h.hologram_id, c.weighted_score, c.created_at, n_data.logos 
+                FROM node_foundation h
+                JOIN chronicles c ON h.lithograph_id = c.id
+                LEFT JOIN node_data n_data ON h.hologram_id = n_data.hologram_id
+                WHERE c.is_active = TRUE
+                LIMIT 2000; 
+            """)
+            nodes_rows = cur.fetchall()
+            
+            # 2. FETCH LINKS (The Lines)
+            cur.execute("SELECT source_hologram_id, target_hologram_id, strength FROM node_links;")
+            links_rows = cur.fetchall()
+            
+        # 3. FORMAT FOR FRONTEND (JSON)
+        nodes = []
+        for r in nodes_rows:
+            # Create a label from the summary (logos), or fallback to "Memory"
+            label = r[3][:40] + "..." if r[3] else "Memory Node"
+            nodes.append({
+                "id": str(r[0]),      # The UUID
+                "val": r[1],          # Size = Weighted Score (0-9)
+                "name": label,        # Label = Summary text
+                "group": 1            # Color group (can be customized later)
+            })
+            
+        links = []
+        for r in links_rows:
+            links.append({
+                "source": str(r[0]),
+                "target": str(r[1]),
+                "value": r[2]         # Thickness = Link Strength
+            })
+            
+        return {"nodes": nodes, "links": links}
+
+    except Exception as e:
+        log_error(f"GRAPH ERROR: {e}")
+        return {"nodes": [], "links": []}
+    finally:
+        if conn: conn.close()
+
 @app.post("/admin/sync")
 def sync_holograms():
     # NOTE: BackgroundTasks removed. This is now BLOCKING/SYNCHRONOUS.
