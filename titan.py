@@ -710,11 +710,12 @@ def process_hologram_sync(content_to_save: str, litho_id: int, gate_threshold: i
     try:
         if not GEMINI_CLIENT: return False
         
+        # 1. LOAD CACHE & DECODE
         db = DBManager()
         token_cache = db.load_token_cache()
         decoded_content = decode_memory(content_to_save, token_cache)
 
-        # 1. REFRACT (The Metadata Generation)
+        # 2. REFRACT (Metadata Generation)
         refraction = generate_with_fallback(
             GEMINI_CLIENT,
             contents=[f"INPUT DATA TO REFRACT:\n{decoded_content[:10000]}"],
@@ -722,60 +723,36 @@ def process_hologram_sync(content_to_save: str, litho_id: int, gate_threshold: i
             config=types.GenerateContentConfig(temperature=0.1, response_mime_type="application/json")
         )
         
-        data = json.loads(refraction.text)
-        score = data.get("weighted_score", 5) # Default to 5 if missing
-        
-        # 2. SAVE THE HOLOGRAPHIC DATA
-        # (This saves the summary/tags regardless of the gate)
-        new_hid = db.save_holographic_node(litho_id, data)
-
-        # 3. THE SIGNIFICANCE GATE
-        if score < gate_threshold:
-            log(f"⚠️ GATE ACTIVE: Score {score} < {gate_threshold}. Skipping expensive Weaver resonance.")
-            return True # Successfully saved, but didn't weave
-            
-        # 4. WEAVE (The Expensive Part)
-        log(f"🔥 SIGNIFICANT MEMORY ({score}): Engaging Weaver for Litho ID {litho_id}")
-        weaver = WeaverManager(db)
-        weaver.weave(new_hid, decoded_content, data.get("keywords", []))
-        
-        return True
-    except Exception as e:
-        log(f"❌ Refraction/Weave Failed: {e}")
-        return False
-    
-    log(f"Starting SYNC Refraction for Litho ID: {litho_id}")
-    try:
-        if not GEMINI_CLIENT: return False
-        
-        # --- ADDED: DECODE FOR AI EYES ---
-        db = DBManager()
-        token_cache = db.load_token_cache()
-        decoded_content = decode_memory(content_to_save, token_cache)
-
-        refraction = generate_with_fallback(
-            GEMINI_CLIENT,
-            contents=[f"INPUT DATA TO REFRACT:\n{decoded_content[:10000]}"], # Use decoded
-            system_prompt=REFRACTOR_SYSTEM_PROMPT,
-            config=types.GenerateContentConfig(temperature=0.1, response_mime_type="application/json")
-        )
-        
+        # Clean JSON
         raw_text = refraction.text.strip()
         if raw_text.startswith("`" * 3): raw_text = raw_text.split("\n", 1)[-1].rsplit("\n", 1)[0]
         if raw_text.startswith("json"): raw_text = raw_text[4:].strip()
         packet = json.loads(raw_text)
         
+        score = packet.get("weighted_score", 5) 
+
+        # 3. ANCHOR TO CORE (Always save the summary/metadata)
         holo_manager = HolographicManager()
         res = holo_manager.commit_hologram(packet, litho_id)
         
         if res.get("status") == "SUCCESS":
-            hologram_id = res.get("hologram_id")
+            new_hid = res.get("hologram_id")
+            
+            # 4. THE SIGNIFICANCE GATE (The Billing Shield)
+            if score < gate_threshold:
+                log(f"⚠️ GATE ACTIVE: Score {score} < {gate_threshold}. Skipping Weaver resonance.")
+                return True 
+                
+            # 5. WEAVE (Deep Resonance)
+            log(f"🔥 SIGNIFICANT MEMORY ({score}): Engaging Weaver for Node {new_hid}")
             keywords = packet.get("keywords") or []
-            weaver = WeaverManager(holo_manager.db)
-            weaver.weave(hologram_id, content_to_save, keywords)
+            weaver = WeaverManager(db)
+            weaver.weave(new_hid, decoded_content, keywords)
             return True
+            
+        return False
     except Exception as e:
-        log_error(f"SYNC PROCESS ERROR: {e}")
+        log_error(f"❌ Refraction/Weave Failed for ID {litho_id}: {e}")
         return False
 
 def process_retro_weave_sync(content_to_save: str, hologram_id: str):
@@ -1040,44 +1017,35 @@ def get_graph_data():
 
 @app.post("/admin/sync")
 def sync_holograms(payload: dict = None):
-    # 1. Grab the threshold from the UI. If none sent, default to 5.
     threshold = payload.get("gate_threshold", 5) if payload else 5
-    
     db_manager = DBManager()
     
-    # Priority 1: Find Orphans (Ghosts)
+    # Priority 1: Orphans (Ghosts - Records with no Hologram yet)
     ghosts = db_manager.get_orphaned_lithographs(limit=10) 
-    
     if ghosts:
         count = 0
         for row in ghosts:
             try:
-                # 2. Pass the threshold into the process function
                 success = process_hologram_sync(row[1], row[0], gate_threshold=threshold)
                 if success: count += 1
             except Exception as e:
-                if "Titan Shield Report" in str(e): 
-                    return {"status": "RATE_LIMIT", "message": "ALL API QUOTAS EXHAUSTED"}
-        
+                if "Titan Shield Report" in str(e): return {"status": "RATE_LIMIT", "message": "API EXHAUSTED"}
         return {"status": "SUCCESS", "queued_count": count, "mode": "ORPHAN_REPAIR"}
     
-    # (Optional: Repeat this logic for your RETRO_WEAVE section if you have one)
-    return {"status": "SUCCESS", "queued_count": 0, "mode": "IDLE"}
-    
-    # Priority 2: Find Unwoven (Zombies)
-    zombies = db_manager.get_unwoven_holograms(limit=10) # Small batch
+    # Priority 2: Unwoven (Zombies - Holograms with no Synapses yet)
+    zombies = db_manager.get_unwoven_holograms(limit=10) 
     if zombies:
         count = 0
         for row in zombies:
             try:
+                # We reuse the logic but focusing on weaving
                 success = process_retro_weave_sync(row[1], row[0])
                 if success: count += 1
             except Exception as e:
-                if "Titan Shield Report" in str(e): 
-                    return {"status": "RATE_LIMIT", "message": "ALL API QUOTAS EXHAUSTED"}
+                if "Titan Shield Report" in str(e): return {"status": "RATE_LIMIT", "message": "API EXHAUSTED"}
         return {"status": "SUCCESS", "queued_count": count, "mode": "RETRO_WEAVE"}
 
-    return {"status": "SUCCESS", "message": "All Systems Synchronized.", "queued_count": 0}
+    return {"status": "SUCCESS", "queued_count": 0, "mode": "IDLE"}
 
 @app.post("/")
 def handle_request(event: EventModel, background_tasks: BackgroundTasks):
