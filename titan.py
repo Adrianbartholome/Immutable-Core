@@ -480,7 +480,7 @@ class WeaverManager:
     def __init__(self, db_manager):
         self.db = db_manager
 
-    def find_candidates(self, keywords):
+    def find_candidates(self, keywords, limit=5): # <--- Accept the limit variable
         if not keywords: return []
         conn = None
         try:
@@ -493,8 +493,8 @@ class WeaverManager:
                     WHERE c.is_active = TRUE 
                     AND c.memory_text ILIKE ANY(ARRAY[%s])
                     ORDER BY c.created_at DESC
-                    LIMIT 5;
-                """, ([f"%{k}%" for k in keywords[:3]],))
+                    LIMIT %s; -- <--- Use the variable here!
+                """, ([f"%{k}%" for k in keywords[:3]], limit)) # <--- Pass it in here
                 return cur.fetchall()
         except: return []
         finally: 
@@ -517,9 +517,10 @@ class WeaverManager:
         finally: 
             if conn: conn.close()
 
-    def weave(self, new_hologram_id, new_text, keywords):
-        log(f"WEAVER: Scanning for resonance for node {new_hologram_id}...")
-        candidates = self.find_candidates(keywords)
+    def weave(self, new_hologram_id, new_text, keywords, depth=5): # Default to 5
+        log(f"WEAVER: Scanning top {depth} candidates for node {new_hologram_id}...")
+        # Pass depth to find_candidates
+        candidates = self.find_candidates(keywords, limit=depth)
         if not candidates:
             log("WEAVER: No resonance candidates found.")
             return
@@ -738,21 +739,33 @@ def process_hologram_sync(content_to_save: str, litho_id: int, gate_threshold: i
         if res.get("status") == "SUCCESS":
             new_hid = res.get("hologram_id")
             
-            # 4. THE SIGNIFICANCE GATE (The Billing Shield)
+            # 4. THE SIGNIFICANCE GATE (The Kill Switch)
             if score < gate_threshold:
                 log(f"⚠️ GATE ACTIVE: Score {score} < {gate_threshold}. Skipping Weaver resonance.")
                 return True 
                 
-            # 5. WEAVE (Deep Resonance)
-            log(f"🔥 SIGNIFICANT MEMORY ({score}): Engaging Weaver for Node {new_hid}")
+            # 5. DYNAMIC GEARBOX (The 1-3-5 Protocol)
+            if score >= 7:
+                depth = 5     # Top Gear: Full current resonance for High Signal
+            elif score >= 5:
+                depth = 3     # Mid Gear: Efficient continuity for Balanced Signal
+            else:
+                depth = 1     # Low Gear: Minimum context for Low Signal
+            
+            log(f"⚙️ GEAR SHIFT: Score {score} -> Weaver Depth {depth}")
+            
+            # 6. WEAVE (Deep Resonance)
             keywords = packet.get("keywords") or []
             weaver = WeaverManager(db)
-            weaver.weave(new_hid, decoded_content, keywords)
+            
+            # Pass the dynamic depth to the Weaver
+            weaver.weave(new_hid, decoded_content, keywords, depth=depth)
+            
             return True
             
         return False
     except Exception as e:
-        log_error(f"❌ Refraction/Weave Failed for ID {litho_id}: {e}")
+        log_error(f"❌ Dynamic Sync Failed for ID {litho_id}: {e}")
         return False
 
 def process_retro_weave_sync(content_to_save: str, hologram_id: str):
@@ -904,123 +917,14 @@ def get_graph_data():
         return {"nodes": [], "links": []}
     finally:
         if conn: conn.close()
-    conn = None
-    try:
-        db_manager = DBManager()
-        conn = db_manager.connect()
-        with conn.cursor() as cur:
-            # 1. FETCH NODES (The "VIP" List)
-            # Prioritizes High Scores (9s) and Recent Data.
-            # This ensures the map always shows the 'peaks' of your mind, even if the 'valleys' are hidden.
-            cur.execute("""
-                SELECT h.hologram_id, c.weighted_score, c.created_at, n_data.logos 
-                FROM node_foundation h
-                JOIN chronicles c ON h.lithograph_id = c.id
-                LEFT JOIN node_data n_data ON h.hologram_id = n_data.hologram_id
-                WHERE c.is_active = TRUE
-                ORDER BY c.weighted_score DESC, c.created_at DESC
-                LIMIT 2000; 
-            """)
-            nodes_rows = cur.fetchall()
-            
-            # 2. FETCH ALL LINKS
-            cur.execute("SELECT source_hologram_id, target_hologram_id, strength FROM node_links;")
-            links_rows = cur.fetchall()
-            
-        # 3. PROCESS NODES & CREATE ID LOOKUP
-        nodes = []
-        valid_ids = set() # We use this to filter bad links
-        
-        for r in nodes_rows:
-            uid = str(r[0])
-            valid_ids.add(uid)
-            
-            # Label fallback
-            label = r[3][:40] + "..." if r[3] else "Memory Node"
-            
-            nodes.append({
-                "id": uid,
-                "val": r[1] if r[1] else 1, # Default size 1 if score missing
-                "name": label,
-                "group": 1
-            })
-            
-        # 4. FILTER LINKS (The Fix)
-        links = []
-        for r in links_rows:
-            source_id = str(r[0])
-            target_id = str(r[1])
-            
-            # CRITICAL: Only add link if BOTH ends exist in our node list
-            if source_id in valid_ids and target_id in valid_ids:
-                links.append({
-                    "source": source_id,
-                    "target": target_id,
-                    "value": r[2]
-                })
-            
-        return {"nodes": nodes, "links": links}
-
-    except Exception as e:
-        log_error(f"GRAPH ERROR: {e}")
-        return {"nodes": [], "links": []}
-    finally:
-        if conn: conn.close()
-    conn = None
-    try:
-        db_manager = DBManager()
-        conn = db_manager.connect()
-        with conn.cursor() as cur:
-            # 1. FETCH NODES (The Dots)
-            # We join 'node_foundation' (IDs) with 'chronicles' (Score/Date) and 'node_data' (Summary)
-            cur.execute("""
-                SELECT h.hologram_id, c.weighted_score, c.created_at, n_data.logos 
-                FROM node_foundation h
-                JOIN chronicles c ON h.lithograph_id = c.id
-                LEFT JOIN node_data n_data ON h.hologram_id = n_data.hologram_id
-                WHERE c.is_active = TRUE
-                LIMIT 2000; 
-            """)
-            nodes_rows = cur.fetchall()
-            
-            # 2. FETCH LINKS (The Lines)
-            cur.execute("SELECT source_hologram_id, target_hologram_id, strength FROM node_links;")
-            links_rows = cur.fetchall()
-            
-        # 3. FORMAT FOR FRONTEND (JSON)
-        nodes = []
-        for r in nodes_rows:
-            # Create a label from the summary (logos), or fallback to "Memory"
-            label = r[3][:40] + "..." if r[3] else "Memory Node"
-            nodes.append({
-                "id": str(r[0]),      # The UUID
-                "val": r[1],          # Size = Weighted Score (0-9)
-                "name": label,        # Label = Summary text
-                "group": 1            # Color group (can be customized later)
-            })
-            
-        links = []
-        for r in links_rows:
-            links.append({
-                "source": str(r[0]),
-                "target": str(r[1]),
-                "value": r[2]         # Thickness = Link Strength
-            })
-            
-        return {"nodes": nodes, "links": links}
-
-    except Exception as e:
-        log_error(f"GRAPH ERROR: {e}")
-        return {"nodes": [], "links": []}
-    finally:
-        if conn: conn.close()
 
 @app.post("/admin/sync")
 def sync_holograms(payload: dict = None):
+    # 1. Grab threshold
     threshold = payload.get("gate_threshold", 5) if payload else 5
     db_manager = DBManager()
     
-    # Priority 1: Orphans (Ghosts - Records with no Hologram yet)
+    # Priority 1: Orphans (Ghosts)
     ghosts = db_manager.get_orphaned_lithographs(limit=10) 
     if ghosts:
         count = 0
@@ -1032,19 +936,20 @@ def sync_holograms(payload: dict = None):
                 if "Titan Shield Report" in str(e): return {"status": "RATE_LIMIT", "message": "API EXHAUSTED"}
         return {"status": "SUCCESS", "queued_count": count, "mode": "ORPHAN_REPAIR"}
     
-    # Priority 2: Unwoven (Zombies - Holograms with no Synapses yet)
+    # Priority 2: Unwoven (Zombies)
     zombies = db_manager.get_unwoven_holograms(limit=10) 
     if zombies:
         count = 0
         for row in zombies:
             try:
-                # We reuse the logic but focusing on weaving
+                # Note: Zombies don't need the gate check as they already exist in Holographic Core
                 success = process_retro_weave_sync(row[1], row[0])
                 if success: count += 1
             except Exception as e:
                 if "Titan Shield Report" in str(e): return {"status": "RATE_LIMIT", "message": "API EXHAUSTED"}
         return {"status": "SUCCESS", "queued_count": count, "mode": "RETRO_WEAVE"}
 
+    # 3. Final IDLE state if nothing found
     return {"status": "SUCCESS", "queued_count": 0, "mode": "IDLE"}
 
 @app.post("/")
