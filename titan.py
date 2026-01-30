@@ -40,6 +40,7 @@ class TitanShield:
         self.soft_cooldowns = {}   # model_name: resume_timestamp
         self.daily_exhausted = set() # model_name (hard lock for 429s)
         self.retry_delay = 300      # 5 minutes for soft errors (503s)
+        self.forced_model = None
 
     def mark_exhausted(self, model_name):
         log(f"🚫 QUOTA DEPLETED: {model_name} locked until manual reset.")
@@ -50,9 +51,15 @@ class TitanShield:
         self.soft_cooldowns[model_name] = time.time() + self.retry_delay
 
     def is_viable(self, model_name):
+        # 1. Hard Lock: If a model is dead for the day, it's dead, forced or not.
         if model_name in self.daily_exhausted:
             return False
+            
+        # 2. Manual Override: If we want a specific model, ignore soft cooldowns.
+        if self.forced_model:
+            return model_name == self.forced_model
         
+        # 3. Soft Shunt: Check if the model is currently in a 5-minute timeout.
         resume_time = self.soft_cooldowns.get(model_name)
         if resume_time and time.time() < resume_time:
             return False
@@ -796,6 +803,18 @@ def get_shield_status():
         "cooling_down": list(SHIELD.soft_cooldowns.keys()),
         "primary_viable": SHIELD.is_viable(MODEL_CASCADE[0])
     }
+@app.post("/admin/shield/toggle_3")
+def toggle_gemini_3():
+    """Manually forces the cascade to stay on Gemini 3 or reverts to Auto."""
+    if SHIELD.forced_model == "gemini-3-flash-preview":
+        SHIELD.forced_model = None
+        log("TITAN SHIELD: Reverted to Auto-Cascade.")
+        return {"status": "AUTO", "model": "gemini-2.5-flash"}
+    else:
+        SHIELD.forced_model = "gemini-3-flash-preview"
+        log("TITAN SHIELD: Manually locked to Gemini 3.")
+        return {"status": "FORCED", "model": "gemini-3-flash-preview"}
+
 
 @app.get("/graph")
 def get_graph_data():
