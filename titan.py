@@ -770,7 +770,7 @@ def handle_request(event: EventModel, background_tasks: BackgroundTasks):
         # Async for new chats is fine (low volume)
         background_tasks.add_task(background_hologram_process, content_to_save, litho_res.get('litho_id'))
         
-        return litho_res
+        return {**litho_res, "ai_text": content_to_save}
 
     except Exception as e:
         log_error(f"FATAL REQUEST ERROR: {e}")
