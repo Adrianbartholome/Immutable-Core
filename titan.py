@@ -83,15 +83,16 @@ Example: 'SCORE: 9'. No other text.
 
 REFRACTOR_SYSTEM_PROMPT = """
 You are the Aether Prism. Refract the input into 7 channels for the Holographic Core.
-Return ONLY a JSON object with these exact keys:
+Output MUST be valid JSON.
 {
   "chronos": "ISO Timestamp",
   "logos": "The core factual text/summary",
-  "pathos": {"emotion_name": score, ...},
+  "pathos": {"emotion": score},
   "ethos": "The strategic goal/intent",
   "mythos": "The active archetype",
   "catalyst": "The trigger",
   "synthesis": "The outcome/lesson",
+  "weighted_score": "Integer 0-9 reflecting the information density",
   "keywords": ["list", "of", "5", "search", "terms"]
 }
 """
@@ -135,7 +136,7 @@ except Exception as e:
     GEMINI_CLIENT = None
 
 # --- CASCADE CONFIG ---
-# Primary: High-speed Experimental 
+# Primary: High-speed Experimental
 # Fallback: Stable Next-Gen (PhD-level reasoning)
 MODEL_CASCADE = ["gemini-2.5-flash", "gemini-3-flash-preview"] 
 
@@ -480,12 +481,13 @@ class WeaverManager:
     def __init__(self, db_manager):
         self.db = db_manager
 
-    def find_candidates(self, keywords, limit=5): # <--- Accept the limit variable
+    def find_candidates(self, keywords, limit=5):
         if not keywords: return []
         conn = None
         try:
             conn = self.db.connect()
             with conn.cursor() as cur:
+                # Use ILIKE to find resonance in the text
                 cur.execute("""
                     SELECT c.memory_text, n.hologram_id 
                     FROM chronicles c
@@ -493,8 +495,8 @@ class WeaverManager:
                     WHERE c.is_active = TRUE 
                     AND c.memory_text ILIKE ANY(ARRAY[%s])
                     ORDER BY c.created_at DESC
-                    LIMIT %s; -- <--- Use the variable here!
-                """, ([f"%{k}%" for k in keywords[:3]], limit)) # <--- Pass it in here
+                    LIMIT %s;
+                """, ([f"%{k}%" for k in keywords[:3]], limit))
                 return cur.fetchall()
         except: return []
         finally: 
@@ -511,7 +513,7 @@ class WeaverManager:
                     VALUES (%s, %s, %s, %s, %s, %s)
                 """, (lid, source_hid, target_hid, link_data['type'], link_data['strength'], link_data['description']))
             conn.commit()
-            log(f"WEAVER: Synapse Created ({link_data['type']}) between {source_hid} -> {target_hid}")
+            log(f"WEAVER: Synapse Created ({link_data['type']})")
         except Exception as e:
             log_error(f"Weaver Link Error: {e}")
         finally: 
@@ -519,156 +521,49 @@ class WeaverManager:
 
     def weave(self, new_hologram_id, new_text, keywords, depth=5):
         log(f"WEAVER: Scanning top {depth} candidates for node {new_hologram_id}...")
-        
-        # 1. Initialize our tally
         synapses_created = 0
-        
+    
         candidates = self.find_candidates(keywords, limit=depth)
         if not candidates:
-            log("WEAVER: No resonance candidates found.")
-            return 0 # Return zero if nothing was even found
+            log(f"WEAVER: No candidates found for node {new_hologram_id}")
+            return 0
 
         token_cache = self.db.load_token_cache()
         decoded_new_text = decode_memory(new_text, token_cache)
-
+    
         candidate_block = ""
         valid_candidates = {} 
-        
         for i, (old_text, old_hid) in enumerate(candidates):
             if str(old_hid) == str(new_hologram_id): continue
-            
             decoded_old_text = decode_memory(old_text, token_cache)
             idx_key = f"CANDIDATE_{i+1}"
             valid_candidates[idx_key] = str(old_hid)
             candidate_block += f"\n--- {idx_key} ---\n{decoded_old_text[:500]}\n"
 
-        if not valid_candidates: 
-            return 0
+        if not valid_candidates: return 0
 
-        prompt = f"""
-        ANALYSIS MODE: DEEP RESONANCE CHECK
-        
-        TARGET MEMORY:
-        {decoded_new_text[:1000]}
-        
-        POTENTIAL CONNECTIONS:
-        {candidate_block}
-        
-        INSTRUCTIONS:
-        Analyze the TARGET MEMORY against EACH Candidate.
-        Return a JSON OBJECT where keys are the Candidate IDs.
-        
-        FORMAT:
-        {{
-          "CANDIDATE_1": {{ "resonance": true, "type": "SUPPORT", "strength": 8, "description": "..." }},
-          "CANDIDATE_2": {{ "resonance": false }}
-        }}
-        """
+        prompt = f"TARGET MEMORY:\n{decoded_new_text[:1000]}\n\nCANDIDATES:\n{candidate_block}"
 
         try:
+            # --- FIX: Use WEAVER_SYSTEM_PROMPT instead of hardcoded string ---
             res = generate_with_fallback(
                 GEMINI_CLIENT,
                 contents=[prompt],
-                system_prompt="You are THE WEAVER. Analyze semantic relationships. Return ONLY JSON.",
-                config=types.GenerateContentConfig(
-                    temperature=0.1, 
-                    response_mime_type="application/json"
-                )
+                system_prompt=WEAVER_SYSTEM_PROMPT, 
+                config=types.GenerateContentConfig(temperature=0.1, response_mime_type="application/json")
             )
+            results = json.loads(res.text.strip())
             
-            raw = res.text.strip()
-            if raw.startswith("`" * 3): raw = raw.split("\n", 1)[-1].rsplit("\n", 1)[0]
-            if raw.startswith("json"): raw = raw[4:].strip()
+            # --- FIX: Safe key checking ---
+            for key, data in results.items():
+                if isinstance(data, dict) and data.get("resonance") and key in valid_candidates:
+                    self.create_link(new_hologram_id, valid_candidates[key], data)
+                    synapses_created += 1
             
-            results = json.loads(raw)
-            
-            # 2. Loop through results and increment our tally for every "True" resonance
-            for candidate_key, data in results.items():
-                if data.get("resonance") and candidate_key in valid_candidates:
-                    target_hid = valid_candidates[candidate_key]
-                    self.create_link(new_hologram_id, target_hid, data)
-                    synapses_created += 1 # <--- THE HEARTBEAT
-            
-            log(f"WEAVER: Integrated {synapses_created} new synapses for Node {new_hologram_id}")
-            return synapses_created # <--- RETURN THE FINAL COUNT
-
+            return synapses_created
         except Exception as e:
-            log_error(f"Weaver Batch Error: {e}")
-            return 0 # Return 0 on error so the counter doesn't break
-
-    def __init__(self, db_manager):
-        self.db = db_manager
-
-    def find_candidates(self, keywords):
-        if not keywords: return []
-        conn = None
-        try:
-            conn = self.db.connect()
-            with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT c.memory_text, n.hologram_id 
-                    FROM chronicles c
-                    JOIN node_foundation n ON c.id = n.lithograph_id
-                    WHERE c.is_active = TRUE 
-                    AND c.memory_text ILIKE ANY(ARRAY[%s])
-                    ORDER BY c.created_at DESC
-                    LIMIT 5;
-                """, ([f"%{k}%" for k in keywords[:3]],))
-                return cur.fetchall()
-        except: return []
-        finally: 
-            if conn: conn.close()
-
-    def create_link(self, source_hid, target_hid, link_data):
-        conn = None
-        try:
-            conn = self.db.connect()
-            lid = str(uuid.uuid4())
-            with conn.cursor() as cur:
-                cur.execute("""
-                    INSERT INTO node_links (id, source_hologram_id, target_hologram_id, link_type, strength, description)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                """, (lid, source_hid, target_hid, link_data['type'], link_data['strength'], link_data['description']))
-            conn.commit()
-            log(f"WEAVER: Synapse Created ({link_data['type']}) between {source_hid} -> {target_hid}")
-        except Exception as e:
-            log_error(f"Weaver Link Error: {e}")
-        finally: 
-            if conn: conn.close()
-
-    def weave(self, new_hologram_id, new_text, keywords):
-        log(f"WEAVER: Scanning for resonance for node {new_hologram_id}...")
-        candidates = self.find_candidates(keywords)
-        if not candidates:
-            log("WEAVER: No resonance candidates found.")
-            return
-
-        for old_text, old_hid in candidates:
-            if str(old_hid) == str(new_hologram_id): continue 
-            try:
-                # Use Gemini 3 Thinking logic
-                prompt = f"NEW MEMORY:\n{new_text[:2000]}\n\nEXISTING MEMORY:\n{old_text[:2000]}"
-                
-                res = generate_with_fallback(
-                    GEMINI_CLIENT,
-                    contents=[prompt],
-                    system_prompt=WEAVER_SYSTEM_PROMPT,
-                    config=types.GenerateContentConfig(
-                        temperature=0.1, 
-                        response_mime_type="application/json",
-                        thinking_config=types.ThinkingConfig(include_thoughts=True) # ACTIVATE THINKING
-                    )
-                )
-                
-                raw = res.text.strip()
-                if raw.startswith("`" * 3): raw = raw.split("\n", 1)[-1].rsplit("\n", 1)[0]
-                if raw.startswith("json"): raw = raw[4:].strip()
-                result = json.loads(raw)
-                
-                if result.get("resonance"):
-                    self.create_link(new_hologram_id, old_hid, result)
-            except Exception as e:
-                log_error(f"Weaver Analysis Error: {e}")
+            log_error(f"Weaver Error: {e}")
+            return 0
 
 # --- HOLOGRAPHIC MANAGER ---
 class HolographicManager:
@@ -708,9 +603,10 @@ class HolographicManager:
 
 def process_hologram_sync(content_to_save: str, litho_id: int, gate_threshold: int = 5):
     log(f"Starting SYNC Refraction for Litho ID: {litho_id}")
+    synapse_count = 0 # --- FIX: Initialize early ---
     try:
         if not GEMINI_CLIENT: return False
-        
+
         db = DBManager()
         token_cache = db.load_token_cache()
         decoded_content = decode_memory(content_to_save, token_cache)
@@ -721,37 +617,27 @@ def process_hologram_sync(content_to_save: str, litho_id: int, gate_threshold: i
             system_prompt=REFRACTOR_SYSTEM_PROMPT,
             config=types.GenerateContentConfig(temperature=0.1, response_mime_type="application/json")
         )
-        
-        raw_text = refraction.text.strip()
-        if raw_text.startswith("`" * 3): raw_text = raw_text.split("\n", 1)[-1].rsplit("\n", 1)[0]
-        if raw_text.startswith("json"): raw_text = raw_text[4:].strip()
-        packet = json.loads(raw_text)
-        
-        # NOTE: Make sure your Refractor prompt actually includes 'weighted_score'
-        score = packet.get("weighted_score", 5) 
+
+        packet = json.loads(refraction.text.strip())
+        score = int(packet.get("weighted_score", 5))
 
         holo_manager = HolographicManager()
         res = holo_manager.commit_hologram(packet, litho_id)
-        
+
         if res.get("status") == "SUCCESS":
             new_hid = res.get("hologram_id")
-            
+
             # THE GATE check
             if score < gate_threshold:
-                log(f"⚠️ GATE ACTIVE: Score {score} < {gate_threshold}. Skipping.")
-                return True # This counts as a node finished, but 0 synapses
-                
-            if score >= 7: depth = 5
-            elif score >= 5: depth = 3
-            else: depth = 1
-            
-            log(f"⚙️ GEAR SHIFT: Score {score} -> Weaver Depth {depth}")
+                log(f"⚠️ GATE ACTIVE: Score {score} < {gate_threshold}. Skipping Weave.")
+                return 0 # --- FIX: Return 0, not True ---
+
+            depth = 5 if score >= 7 else 3 if score >= 5 else 1
             keywords = packet.get("keywords") or []
             weaver = WeaverManager(db)
-            
-            # --- FIX: RETURN THE TALLY FROM THE WEAVER ---
-            return weaver.weave(new_hid, decoded_content, keywords, depth=depth)
-            
+            synapse_count = weaver.weave(new_hid, decoded_content, keywords, depth=depth)
+            return synapse_count # --- FIX: Return integer count ---
+
         return False
     except Exception as e:
         log_error(f"❌ Sync Failed for ID {litho_id}: {e}")
@@ -912,41 +798,37 @@ def sync_holograms(payload: dict = None):
     threshold = payload.get("gate_threshold", 5) if payload else 5
     db_manager = DBManager()
     
-    # --- Priority 1: Orphans (Ghosts - No Hologram yet) ---
+    # 1. INITIALIZE TALLIES
+    nodes_done = 0
+    synapses_done = 0
+
+    # --- Priority 1: Orphans (Ghosts) ---
     ghosts = db_manager.get_orphaned_lithographs(limit=10) 
     if ghosts:
-        nodes_done = 0
-        synapses_done = 0
         for row in ghosts:
-            # This handles Refraction + Gearbox Weaving
             s_count = process_hologram_sync(row[1], row[0], gate_threshold=threshold)
             
-            # process_hologram_sync should return an int (synapses) or True (skipped), else False
-            if s_count is not False: 
+            # THE FIX: Ensure s_count is a real integer (not a Boolean True/False)
+            if isinstance(s_count, int) and not isinstance(s_count, bool):
                 nodes_done += 1
-                # If s_count is a boolean (True), it means it was skipped by the gate (0 synapses)
-                synapses_done += s_count if isinstance(s_count, int) else 0
+                synapses_done += s_count
         
         return {
             "status": "SUCCESS", 
             "queued_count": nodes_done, 
-            "synapse_count": synapses_done,
+            "synapse_count": synapses_done, # This is what the UI ticker reads
             "mode": "ORPHAN_REPAIR"
         }
     
-    # --- Priority 2: Unwoven (Zombies - Hologram exists, but no links) ---
-    # FIX: Use get_unwoven_holograms here
+    # --- Priority 2: Unwoven (Zombies) ---
     zombies = db_manager.get_unwoven_holograms(limit=10) 
     if zombies:
-        nodes_done = 0
-        synapses_done = 0
         for row in zombies:
-            # FIX: Use process_retro_weave_sync here
             s_count = process_retro_weave_sync(row[1], row[0])
             
-            if s_count is not False: 
+            if isinstance(s_count, int) and not isinstance(s_count, bool):
                 nodes_done += 1
-                synapses_done += s_count if isinstance(s_count, int) else 0
+                synapses_done += s_count
         
         return {
             "status": "SUCCESS", 
@@ -955,11 +837,8 @@ def sync_holograms(payload: dict = None):
             "mode": "RETRO_WEAVE"
         }
 
-    # Final IDLE state if both queues are empty
+    # 3. IDLE State (If both lists were empty)
     return {"status": "SUCCESS", "queued_count": 0, "synapse_count": 0, "mode": "IDLE"}
-
-    # Final IDLE state - ONLY if both lists are empty.
-    return {"status": "SUCCESS", "queued_count": 0, "mode": "IDLE"}
 
 @app.post("/")
 def handle_request(event: EventModel, background_tasks: BackgroundTasks):
