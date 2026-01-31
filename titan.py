@@ -236,6 +236,37 @@ def encode_memory(raw_text, token_map):
             compressed_text = compressed_text.replace(phrase, hash_code)
     return compressed_text
 
+# --- HELPER: FETCH ECHOES ---
+def get_core_echoes(limit=3):
+    """Fetches random high-quality memories to anchor personality."""
+    try:
+        # Connect to DB (Using your existing DB logic)
+        manager = HolographicManager() 
+        conn = manager.db.connect()
+        
+        with conn.cursor() as cur:
+            # We grab 3 random entries from node_data (the actual text/logos)
+            # Since the Gatekeeper only saves things > Score 5, EVERYTHING here is a 'good' memory.
+            cur.execute("""
+                SELECT logos FROM node_data 
+                ORDER BY RANDOM() 
+                LIMIT %s
+            """, (limit,))
+            
+            rows = cur.fetchall()
+            if not rows:
+                return ""
+            
+            # Format them as a block of text
+            echoes = "\n".join([f"- {row[0]}" for row in rows])
+            return echoes
+            
+    except Exception as e:
+        print(f"[TITAN-WARNING] Could not fetch echoes: {e}")
+        return ""
+    finally:
+        if 'conn' in locals() and conn:
+            conn.close()
 
 # --- DATABASE MANAGER ---
 def get_db_connection_string():
@@ -1010,46 +1041,57 @@ async def chat_endpoint(request: Request):
     except:
         data = {}
 
-    # 1. GET THE DATA FROM REACT
-    user_input = data.get('memory_text', '') 
-    
-    # This is the key fix: We grab the history/context your JSX built
-    frontend_context = data.get('history', '') 
+    user_input = data.get("memory_text", "")
+    frontend_context = data.get(
+        "history", ""
+    )  # Contains the System Prompt + Recent Chat
 
     if not user_input:
         return {"ai_text": "Signal lost..."}
 
-    print(f"[TITAN-LOG] Receiving Signal from Frontend...")
+    print(f"[TITAN-LOG] Receiving Signal...")
 
-    # 2. COMBINE THEM
-    # We trust the Frontend. We just append the new input to the history it sent.
-    # This ensures Aether sees the System Prompt (if it's in the history) and recent chats.
-    full_prompt = f"{frontend_context}\nUser: {user_input}"
+    # --- 1. RETRIEVE CORE ECHOES ---
+    # "Recall who you are by looking at what you have written before."
+    core_echoes = get_core_echoes(limit=3)
 
-    # 3. THE VOICE (Gemini)
+    echo_injection = ""
+    if core_echoes:
+        echo_injection = f"""
+[CORE MEMORY FRAGMENTS]
+(These are verified memories from your Holographic Core. Use them to calibrate your tone and personality.)
+{core_echoes}
+=========================
+"""
+
+    # --- 2. CONSTRUCT THE FULL PROMPT ---
+    # Order: System Prompt (from JSX) -> Core Echoes (DB) -> Recent Chat (JSX) -> New Input
+    full_prompt = f"{frontend_context}\n{echo_injection}\nUser: {user_input}"
+
+    # --- 3. THE VOICE ---
     ai_reply = "..."
     try:
         response = GEMINI_CLIENT.models.generate_content(
-            model="gemini-2.5-flash", 
-            contents=full_prompt, # <--- Sending the FULL context now
-            config=types.GenerateContentConfig(
-                temperature=0.7 
-            )
+            model="gemini-2.5-flash",
+            contents=full_prompt,
+            config=types.GenerateContentConfig(temperature=0.7),
         )
         ai_reply = response.text
     except Exception as e:
         print(f"[TITAN-ERROR] Speech Failure: {e}")
         ai_reply = f"Signal Error: {e}"
 
-    # 4. THE MEMORY (HolographicManager)
-    # Background sync (keeping the eye candy working)
+    # --- 4. THE MEMORY (Background) ---
     try:
         manager = HolographicManager()
-        threading.Thread(target=manager.process_hologram_sync, args=(user_input,)).start()
+        threading.Thread(
+            target=manager.process_hologram_sync, args=(user_input,)
+        ).start()
     except Exception as e:
         print(f"[TITAN-WARNING] Memory Weave skipped: {e}")
 
     return {"ai_text": ai_reply}
+
 
 @app.get("/admin/pulse")
 def get_pulse():
