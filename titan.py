@@ -1003,39 +1003,47 @@ def get_graph_data():
 
 @app.route('/', methods=['POST'])
 def chat_endpoint():
-    user_input = request.json.get('message', '')
-
+    # --- 1. RECEIVE INPUT ---
+    data = request.json
+    user_input = data.get('message', '')
+    
     if not user_input:
-        return jsonify({"response": "..."})
+        return jsonify({"response": "Silence..."})
 
-    # --- PART 1: THE VOICE (Gemini) ---
-    # This runs independently. It does not need the mysterious class.
+    print(f"[TITAN-LOG] User Message: {user_input[:50]}...")
+
+    # --- 2. THE VOICE (Gemini) ---
+    # We generate the response FIRST. This ensures the UI never hangs.
+    ai_reply = "..."
     try:
         response = gemini_client.models.generate_content(
             model="gemini-2.0-flash-exp", 
-            contents=user_input
+            contents=user_input,
+            config=types.GenerateContentConfig(
+                temperature=0.7 
+            )
         )
         ai_reply = response.text
     except Exception as e:
-        print(f"[TITAN-ERROR] Voice Failed: {e}")
-        ai_reply = "I am unable to speak."
+        print(f"[TITAN-ERROR] Speech Failure: {e}")
+        ai_reply = "I am listening, but my voice is failing."
 
-    # --- PART 2: THE MEMORY (The Mystery Class) ---
-    # We try to find the class instance to save the memory.
+    # --- 3. THE MEMORY (HolographicManager) ---
+    # Now we safely try to save it to the Core.
+    # If this fails (Gatekeeper, Database Error, etc.), it won't stop the chat.
     try:
-        # OPTION A: If you have a global variable named 'titan' or 'db' or 'app'
-        # titan.process_hologram_sync(user_input)
+        # Instantiate the correct class we just found
+        manager = HolographicManager()
         
-        # OPTION B: If it is inside DBManager (as VS Code suggested)
-        # instance = DBManager()
-        # instance.process_hologram_sync(user_input)
-
-        # For now, we print a log so you know it reached here.
-        print(f"[TITAN-LOG] Voice generated. Memory sync pending class identification.")
+        # Run the sync (The Weaver)
+        # Note: Ideally run this in a thread so it doesn't slow down the reply
+        threading.Thread(target=manager.process_hologram_sync, args=(user_input,)).start()
         
     except Exception as e:
-        print(f"[TITAN-WARNING] Memory skipped: {e}")
+        # We log the error but we DO NOT crash the response
+        print(f"[TITAN-WARNING] Memory Weave skipped: {e}")
 
+    # --- 4. RESPOND ---
     return jsonify({"response": ai_reply})
 
 @app.get("/admin/pulse")
