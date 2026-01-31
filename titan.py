@@ -83,16 +83,15 @@ Example: 'SCORE: 9'. No other text.
 
 REFRACTOR_SYSTEM_PROMPT = """
 You are the Aether Prism. Refract the input into 7 channels for the Holographic Core.
-Output MUST be valid JSON.
+Return ONLY a JSON object with these exact keys:
 {
   "chronos": "ISO Timestamp",
   "logos": "The core factual text/summary",
-  "pathos": {"emotion": score},
+  "pathos": {"emotion_name": score, ...},
   "ethos": "The strategic goal/intent",
   "mythos": "The active archetype",
   "catalyst": "The trigger",
   "synthesis": "The outcome/lesson",
-  "weighted_score": "Integer 0-9 reflecting the information density",
   "keywords": ["list", "of", "5", "search", "terms"]
 }
 """
