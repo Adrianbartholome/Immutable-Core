@@ -997,6 +997,25 @@ def get_graph_data():
         if conn:
             conn.close()
 
+# --- ADD THIS TO MAIN.PY ---
+
+@app.get("/admin/pulse")
+def get_pulse():
+    """Returns the live heartbeat of the system (Total Synapses)."""
+    conn = None
+    try:
+        db = DBManager()
+        conn = db.connect()
+        with conn.cursor() as cur:
+            # Fast count of all connections
+            cur.execute("SELECT COUNT(*) FROM node_links;")
+            count = cur.fetchone()[0]
+        return {"status": "SUCCESS", "total_synapses": count}
+    except Exception as e:
+        return {"status": "FAILURE", "error": str(e)}
+    finally:
+        if conn:
+            conn.close()
 
 @app.post("/admin/sync")
 def sync_holograms(payload: dict = None):
