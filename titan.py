@@ -422,6 +422,28 @@ class DBManager:
             if conn:
                 conn.close()
 
+    def get_latest_hash(self):
+        """Fetches the current_hash of the most recent active block."""
+        conn = None
+        try:
+            conn = self.connect()
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT current_hash 
+                    FROM chronicles 
+                    WHERE is_active = TRUE 
+                    ORDER BY created_at DESC 
+                    LIMIT 1
+                """)
+                result = cur.fetchone()
+                return result[0] if result else "GENESIS_BLOCK_0000000000000000"
+        except Exception as e:
+            print(f"[TITAN-DB] Hash Fetch Error: {e}")
+            return "GENESIS_BLOCK_0000000000000000"
+        finally:
+            if conn:
+                conn.close()
+
     def scrape_web(self, target_url):
         if not target_url.startswith("http"):
             target_url = "https://" + target_url
@@ -1124,39 +1146,56 @@ async def chat_endpoint(request: Request):
     # =========================================================
     # PATH A: MANUAL COMMIT (Button / File Upload)
     # =========================================================
-    if action == "commit":
-        text_to_save = data.get("memory_text", "")
-        manual_score = data.get("override_score")
-
+    if action == 'commit':
+        text_to_save = data.get('memory_text', '')
+        manual_score = data.get('override_score') 
+        
         if not text_to_save:
             return {"status": "FAILURE", "error": "No data."}
 
         try:
-            # 1. THE LITHOGRAPH (Linear Time)
-            # Create the log entry first so we have an ID to anchor to
-            litho_id = create_manual_lithograph(text_to_save, manual_score)
+            # 1. INITIALIZE DB MANAGER
+            db = DBManager()
+            
+            # 2. PREPARE DEPENDENCIES
+            # We need the previous hash and the token cache to forge the block
+            prev_hash = db.get_latest_hash()
+            token_cache = db.load_token_cache()
 
-            if not litho_id:
-                # If DB failed, we still try to save the Holograph as an orphan (backup)
-                print("[TITAN-WARNING] Lithograph failed. Saving as Orphan Holograph.")
-                litho_id = None
+            # 3. COMMIT LITHOGRAPH (Using your Class Method)
+            # We pass 'client=None' because we are providing a manual score override
+            litho_result = db.commit_lithograph(
+                previous_hash=prev_hash,
+                raw_text=text_to_save,
+                client=None, 
+                token_cache=token_cache,
+                manual_score=manual_score
+            )
 
-            # 2. THE HOLOGRAPH (Graph Time)
-            # Now we pass the real ID so the node is linked to the log
+            if litho_result['status'] != 'SUCCESS':
+                return {"status": "FAILURE", "error": litho_result.get('error')}
+
+            litho_id = litho_result['litho_id']
+            # Note: Your method returns the 'new_hash' but currently not the encoded text.
+            # We will rely on process_hologram_sync to re-encode/decode or just handle the raw text 
+            # (since we know the text exists in the DB now).
+            
+            # 4. COMMIT HOLOGRAPH (Graph Node)
+            # We pass the raw text and the new ID. 
+            # (process_hologram_sync handles its own encoding/decoding internally)
             threading.Thread(
-                target=process_hologram_sync,
-                args=(text_to_save,),
+                target=process_hologram_sync, 
+                args=(text_to_save,), 
                 kwargs={
-                    "override_score": manual_score,
-                    "litho_id": litho_id,  # <--- PASSING THE ID
-                },
+                    'override_score': manual_score,
+                    'litho_id': litho_id
+                } 
             ).start()
-
+            
         except Exception as e:
             return {"status": "FAILURE", "error": str(e)}
 
         return {"status": "SUCCESS", "message": "Signal Anchored."}
-
     # =========================================================
     # PATH B: CHAT (The Voice)
     # =========================================================
