@@ -1005,25 +1005,23 @@ def get_graph_data():
 
 @app.post("/")
 async def chat_endpoint(request: Request):
-    # --- 1. RECEIVE INPUT (FastAPI Style) ---
-    # We must 'await' the JSON in FastAPI
     try:
         data = await request.json()
     except:
         data = {}
-        
-    user_input = data.get('message', '')
-    
+
+    # FIX 1: Frontend sends 'memory_text', not 'message'
+    user_input = data.get('memory_text', '') 
+
     if not user_input:
-        return {"response": "Silence..."}
+        # If we can't find the text, return the error the frontend expects
+        return {"ai_text": "Error: No signal received."}
 
     print(f"[TITAN-LOG] User Message: {user_input[:50]}...")
 
-    # --- 2. THE VOICE (Gemini) ---
+    # --- THE VOICE ---
     ai_reply = "..."
     try:
-        # We run the synchronous Gemini call in a separate thread so it doesn't block the async server
-        # (Or we just let it block for a moment, which is fine for a personal app)
         response = GEMINI_CLIENT.models.generate_content(
             model="gemini-2.0-flash-exp", 
             contents=user_input,
@@ -1036,19 +1034,15 @@ async def chat_endpoint(request: Request):
         print(f"[TITAN-ERROR] Speech Failure: {e}")
         ai_reply = "I am listening, but my voice is failing."
 
-    # --- 3. THE MEMORY (HolographicManager) ---
+    # --- THE MEMORY ---
     try:
-        # Same logic as before: Fire and Forget
         manager = HolographicManager()
-        # Threading still works perfectly here
         threading.Thread(target=manager.process_hologram_sync, args=(user_input,)).start()
-        
     except Exception as e:
         print(f"[TITAN-WARNING] Memory Weave skipped: {e}")
 
-    # --- 4. RESPOND ---
-    # FastAPI automatically converts dicts to JSON
-    return {"response": ai_reply}
+    # FIX 2: Frontend expects 'ai_text', not 'response'
+    return {"ai_text": ai_reply}
 
 @app.get("/admin/pulse")
 def get_pulse():
