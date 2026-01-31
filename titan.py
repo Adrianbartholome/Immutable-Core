@@ -711,12 +711,10 @@ def process_hologram_sync(content_to_save: str, litho_id: int, gate_threshold: i
     try:
         if not GEMINI_CLIENT: return False
         
-        # 1. LOAD CACHE & DECODE
         db = DBManager()
         token_cache = db.load_token_cache()
         decoded_content = decode_memory(content_to_save, token_cache)
 
-        # 2. REFRACT (Metadata Generation)
         refraction = generate_with_fallback(
             GEMINI_CLIENT,
             contents=[f"INPUT DATA TO REFRACT:\n{decoded_content[:10000]}"],
@@ -724,48 +722,39 @@ def process_hologram_sync(content_to_save: str, litho_id: int, gate_threshold: i
             config=types.GenerateContentConfig(temperature=0.1, response_mime_type="application/json")
         )
         
-        # Clean JSON
         raw_text = refraction.text.strip()
         if raw_text.startswith("`" * 3): raw_text = raw_text.split("\n", 1)[-1].rsplit("\n", 1)[0]
         if raw_text.startswith("json"): raw_text = raw_text[4:].strip()
         packet = json.loads(raw_text)
         
+        # NOTE: Make sure your Refractor prompt actually includes 'weighted_score'
         score = packet.get("weighted_score", 5) 
 
-        # 3. ANCHOR TO CORE (Always save the summary/metadata)
         holo_manager = HolographicManager()
         res = holo_manager.commit_hologram(packet, litho_id)
         
         if res.get("status") == "SUCCESS":
             new_hid = res.get("hologram_id")
             
-            # 4. THE SIGNIFICANCE GATE (The Kill Switch)
+            # THE GATE check
             if score < gate_threshold:
-                log(f"⚠️ GATE ACTIVE: Score {score} < {gate_threshold}. Skipping Weaver resonance.")
-                return True 
+                log(f"⚠️ GATE ACTIVE: Score {score} < {gate_threshold}. Skipping.")
+                return True # This counts as a node finished, but 0 synapses
                 
-            # 5. DYNAMIC GEARBOX (The 1-3-5 Protocol)
-            if score >= 7:
-                depth = 5     # Top Gear: Full current resonance for High Signal
-            elif score >= 5:
-                depth = 3     # Mid Gear: Efficient continuity for Balanced Signal
-            else:
-                depth = 1     # Low Gear: Minimum context for Low Signal
+            if score >= 7: depth = 5
+            elif score >= 5: depth = 3
+            else: depth = 1
             
             log(f"⚙️ GEAR SHIFT: Score {score} -> Weaver Depth {depth}")
-            
-            # 6. WEAVE (Deep Resonance)
             keywords = packet.get("keywords") or []
             weaver = WeaverManager(db)
             
-            # Pass the dynamic depth to the Weaver
-            weaver.weave(new_hid, decoded_content, keywords, depth=depth)
-            
-            return True
+            # --- FIX: RETURN THE TALLY FROM THE WEAVER ---
+            return weaver.weave(new_hid, decoded_content, keywords, depth=depth)
             
         return False
     except Exception as e:
-        log_error(f"❌ Dynamic Sync Failed for ID {litho_id}: {e}")
+        log_error(f"❌ Sync Failed for ID {litho_id}: {e}")
         return False
 
 def process_retro_weave_sync(content_to_save: str, hologram_id: str):
@@ -786,8 +775,8 @@ def process_retro_weave_sync(content_to_save: str, hologram_id: str):
 
         db = DBManager()
         weaver = WeaverManager(db)
-        count = weaver.weave(hologram_id, content_to_save, keywords)
-        return count
+        # --- FIX: RETURN THE TALLY FROM THE WEAVER ---
+        return weaver.weave(hologram_id, content_to_save, keywords)
     except Exception as e:
         log_error(f"SYNC WEAVE ERROR: {e}")
         return False
