@@ -725,17 +725,18 @@ class WeaverManager:
 
         conn = None
         try:
-            # FIX: Open a fresh connection for this specific operation
+            # FIX 1: Open fresh connection
             conn = self.db.connect()
             with conn.cursor() as cur:
-                # HEBBIAN UPSERT (With correct column names)
+                # FIX 2: Use 'link_type' to match your DB column
+                # FIX 3: Use 'source_hologram_id' / 'target_hologram_id'
                 cur.execute(
                     """
-                    INSERT INTO node_links (source_hologram_id, target_hologram_id, type, weight, description)
+                    INSERT INTO node_links (source_hologram_id, target_hologram_id, link_type, strength, description)
                     VALUES (%s, %s, %s, %s, %s)
                     ON CONFLICT (source_hologram_id, target_hologram_id) 
                     DO UPDATE SET 
-                        weight = node_links.weight + 1
+                        strength = node_links.strength + 1
                     """,
                     (source_id, target_id, data.get('type', 'related'), data.get('strength', 5), data.get('description', ''))
                 )
@@ -745,7 +746,6 @@ class WeaverManager:
             log_error(f"Link Error: {e}")
             return False
         finally:
-            # Clean up the connection so we don't leak memory
             if conn:
                 conn.close()
 
