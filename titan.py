@@ -1107,9 +1107,9 @@ async def chat_endpoint(request: Request):
             return {"status": "FAILURE", "error": "No data."}
 
         try:
-            manager = HolographicManager()
+            # FIX: Call function directly (No 'manager.')
             threading.Thread(
-                target=manager.process_hologram_sync, 
+                target=process_hologram_sync, 
                 args=(text_to_save,), 
                 kwargs={'override_score': manual_score} 
             ).start()
@@ -1159,10 +1159,9 @@ async def chat_endpoint(request: Request):
         if triggered_command:
             print(f"[TITAN-EVENT] Protocol: {triggered_command} | Pilot Score: {ai_score}")
             try:
-                manager = HolographicManager()
-                # We pass 'ai_score' as the override. The Manager will obey.
+                # FIX: Call function directly (No 'manager.')
                 threading.Thread(
-                    target=manager.process_hologram_sync, 
+                    target=process_hologram_sync, 
                     args=(user_input,),
                     kwargs={'override_score': ai_score} 
                 ).start()
@@ -1171,43 +1170,18 @@ async def chat_endpoint(request: Request):
         
         # Optional: Passive sync (No override, let System decide)
         else:
-           try:
-               manager = HolographicManager()
-               threading.Thread(target=manager.process_hologram_sync, args=(user_input,)).start()
-           except:
-               pass
+            try:
+                # FIX: Call function directly
+                threading.Thread(
+                    target=process_hologram_sync, 
+                    args=(user_input,)
+                ).start()
+            except:
+                pass
 
         return {"ai_text": ai_reply}
     
     return {"status": "FAILURE", "error": f"Unknown Action: {action}"}
-
-    # --- 2. CONSTRUCT THE FULL PROMPT ---
-    # Order: System Prompt (from JSX) -> Core Echoes (DB) -> Recent Chat (JSX) -> New Input
-    full_prompt = f"{frontend_context}\n{echo_injection}\nUser: {user_input}"
-
-    # --- 3. THE VOICE ---
-    ai_reply = "..."
-    try:
-        response = GEMINI_CLIENT.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=full_prompt,
-            config=types.GenerateContentConfig(temperature=0.7),
-        )
-        ai_reply = response.text
-    except Exception as e:
-        print(f"[TITAN-ERROR] Speech Failure: {e}")
-        ai_reply = f"Signal Error: {e}"
-
-    # --- 4. THE MEMORY (Background) ---
-    try:
-        manager = HolographicManager()
-        threading.Thread(
-            target=manager.process_hologram_sync, args=(user_input,)
-        ).start()
-    except Exception as e:
-        print(f"[TITAN-WARNING] Memory Weave skipped: {e}")
-
-    return {"ai_text": ai_reply}
 
 
 @app.get("/admin/pulse")
