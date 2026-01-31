@@ -831,6 +831,34 @@ class HolographicManager:
 
 # --- SYNCHRONOUS PROCESSORS ---
 
+def create_manual_lithograph(text, score=5):
+    """Saves the raw text to the Chronicles table and returns the ID."""
+    try:
+        db = DBManager()
+        conn = db.connect()
+        new_id = None
+        
+        with conn.cursor() as cur:
+            # TARGETING 'chronicles' NOW
+            cur.execute(
+                """
+                INSERT INTO chronicles (sender, message, created_at) 
+                VALUES ('user', %s, NOW()) 
+                RETURNING id
+                """,
+                (text,)
+            )
+            new_id = cur.fetchone()[0]
+        
+        conn.commit()
+        conn.close()
+        print(f"[TITAN-CHRONICLE] Manual Entry Created. ID: {new_id}")
+        return new_id
+        
+    except Exception as e:
+        print(f"[TITAN-ERROR] Failed to create Chronicle: {e}")
+        return None
+
 # --- Updated Refraction Sync with Significance Gate ---
 
 
@@ -1096,21 +1124,34 @@ async def chat_endpoint(request: Request):
     # =========================================================
     # PATH A: MANUAL COMMIT (Button / File Upload)
     # =========================================================
-    if action == 'commit':
-        text_to_save = data.get('memory_text', '')
-        # User Manual Override (from Slider)
-        manual_score = data.get('override_score') 
-        
+    if action == "commit":
+        text_to_save = data.get("memory_text", "")
+        manual_score = data.get("override_score")
+
         if not text_to_save:
             return {"status": "FAILURE", "error": "No data."}
 
         try:
-            # FIX: Call function directly (No 'manager.')
+            # 1. THE LITHOGRAPH (Linear Time)
+            # Create the log entry first so we have an ID to anchor to
+            litho_id = create_manual_lithograph(text_to_save, manual_score)
+
+            if not litho_id:
+                # If DB failed, we still try to save the Holograph as an orphan (backup)
+                print("[TITAN-WARNING] Lithograph failed. Saving as Orphan Holograph.")
+                litho_id = None
+
+            # 2. THE HOLOGRAPH (Graph Time)
+            # Now we pass the real ID so the node is linked to the log
             threading.Thread(
-                target=process_hologram_sync, 
-                args=(text_to_save,), 
-                kwargs={'override_score': manual_score} 
+                target=process_hologram_sync,
+                args=(text_to_save,),
+                kwargs={
+                    "override_score": manual_score,
+                    "litho_id": litho_id,  # <--- PASSING THE ID
+                },
             ).start()
+
         except Exception as e:
             return {"status": "FAILURE", "error": str(e)}
 
@@ -1165,7 +1206,7 @@ async def chat_endpoint(request: Request):
                 ).start()
             except Exception as e:
                 print(f"[TITAN-WARNING] Auto-Commit failed: {e}")
-        
+
         # Optional: Passive sync (No override, let System decide)
         else:
             try:
@@ -1178,7 +1219,7 @@ async def chat_endpoint(request: Request):
                 pass
 
         return {"ai_text": ai_reply}
-    
+
     return {"status": "FAILURE", "error": f"Unknown Action: {action}"}
 
 
