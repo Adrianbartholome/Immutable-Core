@@ -723,10 +723,12 @@ class WeaverManager:
         if str(source_id) == str(target_id):
             return False
 
+        conn = None
         try:
-            with self.conn.cursor() as cur:
-                # HEBBIAN UPSERT:
-                # Note the column names: source_hologram_id, target_hologram_id
+            # FIX: Open a fresh connection for this specific operation
+            conn = self.db.connect()
+            with conn.cursor() as cur:
+                # HEBBIAN UPSERT (With correct column names)
                 cur.execute(
                     """
                     INSERT INTO node_links (source_hologram_id, target_hologram_id, type, weight, description)
@@ -737,11 +739,15 @@ class WeaverManager:
                     """,
                     (source_id, target_id, data.get('type', 'related'), data.get('strength', 5), data.get('description', ''))
                 )
-            self.conn.commit()
+            conn.commit()
             return True
         except Exception as e:
             log_error(f"Link Error: {e}")
             return False
+        finally:
+            # Clean up the connection so we don't leak memory
+            if conn:
+                conn.close()
 
 
 # --- HOLOGRAPHIC MANAGER ---
