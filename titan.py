@@ -503,7 +503,7 @@ class WeaverManager:
 
     def weave(self, new_hologram_id, new_text, keywords, depth=5):
         log(f"WEAVER: Scanning top {depth} candidates for node {new_hologram_id}...")
-        synapses_created = 0 # Initialize the counter
+        synapses_created = 0
         
         candidates = self.find_candidates(keywords, limit=depth)
         if not candidates:
@@ -522,11 +522,9 @@ class WeaverManager:
             candidate_block += f"\n--- {idx_key} ---\n{decoded_old_text[:500]}\n"
 
         if not valid_candidates: return 0
-
         prompt = f"TARGET MEMORY:\n{decoded_new_text[:1000]}\n\nCANDIDATES:\n{candidate_block}"
 
         try:
-            # RESTORED: Your original prompt and config
             res = generate_with_fallback(
                 GEMINI_CLIENT,
                 contents=[prompt],
@@ -534,25 +532,39 @@ class WeaverManager:
                 config=types.GenerateContentConfig(temperature=0.1, response_mime_type="application/json")
             )
             
-            # RESTORED: Your original string stripping logic
             raw = res.text.strip()
-            if raw.startswith("`" * 3): raw = raw.split("\n", 1)[-1].rsplit("\n", 1)[0]
-            if raw.startswith("json"): raw = raw[4:].strip()
+            if raw.startswith("```"):
+                raw = raw.strip("`").replace("json", "", 1).strip()
             
             results = json.loads(raw)
             
-            # RESTORED: Your original loop
-            for key, data in results.items():
-                if data.get("resonance") and key in valid_candidates:
-                    self.create_link(new_hologram_id, valid_candidates[key], data)
-                    synapses_created += 1 # Increment for the ticker
+            # --- THE FIX: Handle both List and Dictionary responses ---
+            if isinstance(results, list):
+                # If Gemini returns a list, we match by index to our candidates
+                for i, data in enumerate(results):
+                    key = f"CANDIDATE_{i+1}"
+                    if key in valid_candidates and isinstance(data, dict) and data.get("resonance"):
+                        self.create_link(new_hologram_id, valid_candidates[key], data)
+                        # RESTORED: Your original log format
+                        log(f"WEAVER: Synapse Created ({data.get('type', 'LINK')}) between {new_hologram_id} -> {valid_candidates[key]}")
+                        synapses_created += 1
+            elif isinstance(results, dict):
+                # If Gemini returns a dictionary (CANDIDATE_1: {...})
+                for key, data in results.items():
+                    if key in valid_candidates and isinstance(data, dict) and data.get("resonance"):
+                        self.create_link(new_hologram_id, valid_candidates[key], data)
+                        log(f"WEAVER: Synapse Created ({data.get('type', 'LINK')}) between {new_hologram_id} -> {valid_candidates[key]}")
+                        synapses_created += 1
             
-            log(f"WEAVER: Integration Complete. {synapses_created} synapses woven.")
-            return synapses_created # The critical return for the HUD
+            if synapses_created > 0:
+                log(f"WEAVER: Integration Complete. {synapses_created} synapses woven.")
+            
+            return synapses_created
+            
         except Exception as e:
             log_error(f"Weaver Error: {e}")
             return 0
-
+        
     def create_link(self, source_hid, target_hid, link_data):
         conn = None
         try:
