@@ -1010,21 +1010,28 @@ async def chat_endpoint(request: Request):
     except:
         data = {}
 
-    # FIX 1: Frontend sends 'memory_text', not 'message'
+    # 1. GET THE DATA FROM REACT
     user_input = data.get('memory_text', '') 
+    
+    # This is the key fix: We grab the history/context your JSX built
+    frontend_context = data.get('history', '') 
 
     if not user_input:
-        # If we can't find the text, return the error the frontend expects
-        return {"ai_text": "Error: No signal received."}
+        return {"ai_text": "Signal lost..."}
 
-    print(f"[TITAN-LOG] User Message: {user_input[:50]}...")
+    print(f"[TITAN-LOG] Receiving Signal from Frontend...")
 
-    # --- THE VOICE ---
+    # 2. COMBINE THEM
+    # We trust the Frontend. We just append the new input to the history it sent.
+    # This ensures Aether sees the System Prompt (if it's in the history) and recent chats.
+    full_prompt = f"{frontend_context}\nUser: {user_input}"
+
+    # 3. THE VOICE (Gemini)
     ai_reply = "..."
     try:
         response = GEMINI_CLIENT.models.generate_content(
             model="gemini-2.5-flash", 
-            contents=user_input,
+            contents=full_prompt, # <--- Sending the FULL context now
             config=types.GenerateContentConfig(
                 temperature=0.7 
             )
@@ -1032,16 +1039,16 @@ async def chat_endpoint(request: Request):
         ai_reply = response.text
     except Exception as e:
         print(f"[TITAN-ERROR] Speech Failure: {e}")
-        ai_reply = "I am listening, but my voice is failing."
+        ai_reply = f"Signal Error: {e}"
 
-    # --- THE MEMORY ---
+    # 4. THE MEMORY (HolographicManager)
+    # Background sync (keeping the eye candy working)
     try:
         manager = HolographicManager()
         threading.Thread(target=manager.process_hologram_sync, args=(user_input,)).start()
     except Exception as e:
         print(f"[TITAN-WARNING] Memory Weave skipped: {e}")
 
-    # FIX 2: Frontend expects 'ai_text', not 'response'
     return {"ai_text": ai_reply}
 
 @app.get("/admin/pulse")
