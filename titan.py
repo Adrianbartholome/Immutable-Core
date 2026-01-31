@@ -80,50 +80,39 @@ SHIELD = TitanShield()
 
 # --- PROMPTS ---
 SCORING_SYSTEM_PROMPT = """
-You are SNEGO-P, the Aether Eternal Cognitive Assessor.
-Output MUST be a single integer from 0 to 9, preceded strictly by 'SCORE: '. 
-Example: 'SCORE: 9'. No other text.
+You are SNEGO-P. Output MUST be 'SCORE: X' (0-9). Example: 'SCORE: 7'.
 """
 
 REFRACTOR_SYSTEM_PROMPT = """
-You are the Aether Prism. Refract the input into 7 channels for the Holographic Core.
-Return ONLY a JSON object with these exact keys:
+You are the Aether Prism. Refract input into 7 channels.
+Return ONLY JSON with these keys:
 {
-  "weighted_score": 1-10, 
+  "weighted_score": 0-9,
   "chronos": "ISO Timestamp",
-  "logos": "The core factual text/summary",
-  "pathos": {"emotion_name": score, ...},
-  "ethos": "The strategic goal/intent",
-  "mythos": "The active archetype",
-  "catalyst": "The trigger",
-  "synthesis": "The outcome/lesson",
-  "keywords": ["list", "of", "5", "search", "terms"]
+  "logos": "Factual summary",
+  "pathos": {"emotion": score},
+  "ethos": "Strategic intent",
+  "mythos": "Archetype",
+  "catalyst": "Trigger",
+  "synthesis": "Outcome",
+  "keywords": ["tag1", "tag2"]
 }
 """
 
 WEAVER_SYSTEM_PROMPT = """
-You are THE WEAVER, the Neural Architect of the Aether.
-Your job is to detect RESONANCE between a NEW Memory and an EXISTING Memory.
-
-INPUT:
-1. NEW MEMORY (The Signal)
-2. EXISTING MEMORY (The Anchor)
-
-TASK:
-Determine if there is a significant semantic relationship.
-If NO relationship, return {"resonance": false}.
-If YES, return:
+You are THE WEAVER. Detect RESONANCE between the TARGET and CANDIDATE memories.
+Return a JSON Object where keys are "CANDIDATE_1", "CANDIDATE_2", etc.
+For each, return:
 {
-  "resonance": true,
+  "resonance": boolean,
   "type": "SUPPORT" | "CONTRADICTION" | "EXTENSION" | "ORIGIN" | "ECHO",
   "strength": 1-10,
-  "description": "Brief explanation of the link"
+  "description": "Brief explanation"
 }
 """
 
 KEYWORDS_PROMPT = """
-Extract 5-7 distinct, high-value search keywords or phrases from this text.
-Return ONLY a JSON array of strings. Example: ["keyword1", "keyword2"]
+Extract 5-7 distinct keywords as a JSON array of strings. Example: ["keyword1", "keyword2"]
 """
 
 # --- CLIENT INITIALIZATION ---
