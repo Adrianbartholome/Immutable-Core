@@ -834,31 +834,31 @@ class HolographicManager:
 # --- Updated Refraction Sync with Significance Gate ---
 
 
-def process_hologram_sync(content_to_save: str, litho_id: int = 0, gate_threshold: int = 5, override_score=None):
-    log(f"Starting SYNC Refraction for Litho ID: {litho_id}")
+# Change default litho_id from 0 to None to prevent FK Constraint errors
+def process_hologram_sync(content_to_save: str, litho_id: int = None, gate_threshold: int = 5, override_score=None):
+    
+    # Handle the case where 0 might be passed explicitly
+    if litho_id == 0: 
+        litho_id = None
+
+    log(f"Starting SYNC Refraction for Litho ID: {litho_id if litho_id else 'Manual'}")
     synapse_count = 0
     
     # --- 1. PRESERVATION PROTOCOL (Safety Net) ---
-    # Default to 5 (Neutral) immediately.
-    # If the Pilot provided a score, that is our baseline.
     if override_score is not None:
         final_score = int(override_score)
         log(f"⚡ PILOT OVERRIDE ACTIVE: Score fixed at {final_score}")
     else:
-        final_score = 5 # Default Neutral
+        final_score = 5 
     
     try:
         # Check client availability
         if not GEMINI_CLIENT:
             log("⚠️ Gemini Client missing. Running Preservation Protocol.")
-            # We don't return 0 here anymore; we fall through to save as a raw memory
             refraction = None
         else:
             db = DBManager()
             token_cache = db.load_token_cache()
-            
-            # Use provided text or decode if necessary
-            # (Assuming decode_memory handles raw strings gracefully or you check types)
             decoded_content = decode_memory(content_to_save, token_cache)
 
             # --- 2. REFRACTION (The Analysis) ---
@@ -881,53 +881,51 @@ def process_hologram_sync(content_to_save: str, litho_id: int = 0, gate_threshol
         if refraction and hasattr(refraction, 'text'):
             try:
                 packet = json.loads(refraction.text.strip())
-                # If no override, trust the AI
                 if override_score is None:
                     final_score = int(packet.get("weighted_score", 5))
             except:
                 log("⚠️ Malformed Refraction JSON. Using Survival Packet.")
         
-        # FORCE THE SCORE (In case Gemini gave it a 3 but Pilot said 9)
+        # FORCE THE SCORE 
         packet["weighted_score"] = final_score
         
-        # Fill missing keys for the Weaver (Survival Mode)
+        # Fill missing keys for Survival Mode
         if "keywords" not in packet: packet["keywords"] = []
         if "mythos" not in packet: packet["mythos"] = "Raw Input"
         if "pathos" not in packet: packet["pathos"] = {"status": "Unprocessed"}
         if "logos" not in packet: packet["logos"] = decoded_content if 'decoded_content' in locals() else content_to_save
 
         # --- 4. THE GATEKEEPER ---
-        # If score is low AND it wasn't a Pilot Override, we skip
         if final_score < gate_threshold and override_score is None:
             log(f"⚠️ GATE ACTIVE: Score {final_score} < {gate_threshold}. Skipping Weave.")
             return 0
 
         # --- 5. COMMIT & WEAVE ---
         holo_manager = HolographicManager()
+        
         # Save the node to Postgres
         res = holo_manager.commit_hologram(packet, litho_id)
 
+        # [CRITICAL FIX] Log the error if commit fails!
         if res.get("status") == "SUCCESS":
             new_hid = res.get("hologram_id")
-
-            # Determine Weave Depth based on final_score
             depth = 5 if final_score >= 8 else 3 if final_score >= 5 else 1
-            
             keywords = packet.get("keywords") or []
             
-            # Use existing DB connection if possible, or new one
             db_for_weaver = db if 'db' in locals() else DBManager()
             weaver = WeaverManager(db_for_weaver)
             
             synapse_count = weaver.weave(
                 new_hid, 
-                packet["logos"], # Ensure we weave the actual text
+                packet["logos"], 
                 keywords, 
                 depth=depth
             )
             return synapse_count
-
-        return 0
+        else:
+            # THIS WAS MISSING: Tell us why the DB rejected it
+            log_error(f"❌ DB Commit Failed: {res.get('error')}")
+            return 0
 
     except Exception as e:
         log_error(f"❌ Critical Sync Failure for ID {litho_id}: {e}")
