@@ -834,51 +834,103 @@ class HolographicManager:
 # --- Updated Refraction Sync with Significance Gate ---
 
 
-def process_hologram_sync(content_to_save: str, litho_id: int, gate_threshold: int = 5):
+def process_hologram_sync(content_to_save: str, litho_id: int = 0, gate_threshold: int = 5, override_score=None):
     log(f"Starting SYNC Refraction for Litho ID: {litho_id}")
-    synapse_count = 0  # --- FIX: Initialize early ---
+    synapse_count = 0
+    
+    # --- 1. PRESERVATION PROTOCOL (Safety Net) ---
+    # Default to 5 (Neutral) immediately.
+    # If the Pilot provided a score, that is our baseline.
+    if override_score is not None:
+        final_score = int(override_score)
+        log(f"⚡ PILOT OVERRIDE ACTIVE: Score fixed at {final_score}")
+    else:
+        final_score = 5 # Default Neutral
+    
     try:
+        # Check client availability
         if not GEMINI_CLIENT:
-            return False
+            log("⚠️ Gemini Client missing. Running Preservation Protocol.")
+            # We don't return 0 here anymore; we fall through to save as a raw memory
+            refraction = None
+        else:
+            db = DBManager()
+            token_cache = db.load_token_cache()
+            
+            # Use provided text or decode if necessary
+            # (Assuming decode_memory handles raw strings gracefully or you check types)
+            decoded_content = decode_memory(content_to_save, token_cache)
 
-        db = DBManager()
-        token_cache = db.load_token_cache()
-        decoded_content = decode_memory(content_to_save, token_cache)
+            # --- 2. REFRACTION (The Analysis) ---
+            try:
+                refraction = generate_with_fallback(
+                    GEMINI_CLIENT,
+                    contents=[f"INPUT DATA TO REFRACT:\n{decoded_content[:10000]}"],
+                    system_prompt=REFRACTOR_SYSTEM_PROMPT,
+                    config=types.GenerateContentConfig(
+                        temperature=0.1, response_mime_type="application/json"
+                    ),
+                )
+            except Exception as e:
+                log_error(f"Refraction Error: {e}")
+                refraction = None
 
-        refraction = generate_with_fallback(
-            GEMINI_CLIENT,
-            contents=[f"INPUT DATA TO REFRACT:\n{decoded_content[:10000]}"],
-            system_prompt=REFRACTOR_SYSTEM_PROMPT,
-            config=types.GenerateContentConfig(
-                temperature=0.1, response_mime_type="application/json"
-            ),
-        )
+        # --- 3. PACKET CONSTRUCTION ---
+        packet = {}
+        
+        if refraction and hasattr(refraction, 'text'):
+            try:
+                packet = json.loads(refraction.text.strip())
+                # If no override, trust the AI
+                if override_score is None:
+                    final_score = int(packet.get("weighted_score", 5))
+            except:
+                log("⚠️ Malformed Refraction JSON. Using Survival Packet.")
+        
+        # FORCE THE SCORE (In case Gemini gave it a 3 but Pilot said 9)
+        packet["weighted_score"] = final_score
+        
+        # Fill missing keys for the Weaver (Survival Mode)
+        if "keywords" not in packet: packet["keywords"] = []
+        if "mythos" not in packet: packet["mythos"] = "Raw Input"
+        if "pathos" not in packet: packet["pathos"] = {"status": "Unprocessed"}
+        if "logos" not in packet: packet["logos"] = decoded_content if 'decoded_content' in locals() else content_to_save
 
-        packet = json.loads(refraction.text.strip())
-        score = int(packet.get("weighted_score", 5))
+        # --- 4. THE GATEKEEPER ---
+        # If score is low AND it wasn't a Pilot Override, we skip
+        if final_score < gate_threshold and override_score is None:
+            log(f"⚠️ GATE ACTIVE: Score {final_score} < {gate_threshold}. Skipping Weave.")
+            return 0
 
+        # --- 5. COMMIT & WEAVE ---
         holo_manager = HolographicManager()
+        # Save the node to Postgres
         res = holo_manager.commit_hologram(packet, litho_id)
 
         if res.get("status") == "SUCCESS":
             new_hid = res.get("hologram_id")
 
-            # THE GATE check
-            if score < gate_threshold:
-                log(f"⚠️ GATE ACTIVE: Score {score} < {gate_threshold}. Skipping Weave.")
-                return 0  # --- FIX: Return 0, not True ---
-
-            depth = 5 if score >= 7 else 3 if score >= 5 else 1
+            # Determine Weave Depth based on final_score
+            depth = 5 if final_score >= 8 else 3 if final_score >= 5 else 1
+            
             keywords = packet.get("keywords") or []
-            weaver = WeaverManager(db)
+            
+            # Use existing DB connection if possible, or new one
+            db_for_weaver = db if 'db' in locals() else DBManager()
+            weaver = WeaverManager(db_for_weaver)
+            
             synapse_count = weaver.weave(
-                new_hid, decoded_content, keywords, depth=depth
+                new_hid, 
+                packet["logos"], # Ensure we weave the actual text
+                keywords, 
+                depth=depth
             )
-            return synapse_count  # --- FIX: Return integer count ---
+            return synapse_count
 
         return 0
+
     except Exception as e:
-        log_error(f"❌ Sync Failed for ID {litho_id}: {e}")
+        log_error(f"❌ Critical Sync Failure for ID {litho_id}: {e}")
         return 0
 
 
@@ -1041,28 +1093,93 @@ async def chat_endpoint(request: Request):
     except:
         data = {}
 
-    user_input = data.get("memory_text", "")
-    frontend_context = data.get(
-        "history", ""
-    )  # Contains the System Prompt + Recent Chat
+    action = data.get('action', 'chat')
 
-    if not user_input:
-        return {"ai_text": "Signal lost..."}
+    # =========================================================
+    # PATH A: MANUAL COMMIT (Button / File Upload)
+    # =========================================================
+    if action == 'commit':
+        text_to_save = data.get('memory_text', '')
+        # User Manual Override (from Slider)
+        manual_score = data.get('override_score') 
+        
+        if not text_to_save:
+            return {"status": "FAILURE", "error": "No data."}
 
-    print(f"[TITAN-LOG] Receiving Signal...")
+        try:
+            manager = HolographicManager()
+            threading.Thread(
+                target=manager.process_hologram_sync, 
+                args=(text_to_save,), 
+                kwargs={'override_score': manual_score} 
+            ).start()
+        except Exception as e:
+            return {"status": "FAILURE", "error": str(e)}
 
-    # --- 1. RETRIEVE CORE ECHOES ---
-    # "Recall who you are by looking at what you have written before."
-    core_echoes = get_core_echoes(limit=3)
+        return {"status": "SUCCESS", "message": "Signal Anchored."}
 
-    echo_injection = ""
-    if core_echoes:
-        echo_injection = f"""
-[CORE MEMORY FRAGMENTS]
-(These are verified memories from your Holographic Core. Use them to calibrate your tone and personality.)
-{core_echoes}
-=========================
-"""
+    # =========================================================
+    # PATH B: CHAT (The Voice)
+    # =========================================================
+    elif action == 'chat':
+        user_input = data.get('memory_text', '') 
+        frontend_context = data.get('history', '') 
+
+        if not user_input:
+            return {"ai_text": "Signal lost..."}
+
+        # 1. Echoes (Personality)
+        core_echoes = get_core_echoes(limit=3)
+        echo_injection = f"\n[CORE MEMORY FRAGMENTS]\n{core_echoes}\n=========================\n" if core_echoes else ""
+
+        # 2. Prompt
+        full_prompt = f"{frontend_context}\n{echo_injection}\nUser: {user_input}"
+
+        # 3. Voice
+        ai_reply = "..."
+        try:
+            response = GEMINI_CLIENT.models.generate_content(
+                model="gemini-2.5-flash", 
+                contents=full_prompt, 
+                config=types.GenerateContentConfig(temperature=0.7)
+            )
+            ai_reply = response.text
+        except Exception as e:
+            print(f"[TITAN-ERROR] Speech Failure: {e}")
+            ai_reply = f"Signal Error: {e}"
+
+        # 4. PARSE TRIGGERS AND SCORE (The Override)
+        triggers = ["[COMMIT_MEMORY]", "[COMMIT_SUMMARY]", "[COMMIT_FILE]"]
+        triggered_command = next((t for t in triggers if t in ai_reply), None)
+
+        # Look for [SCORE: 9] in Aether's words
+        score_match = re.search(r"\[SCORE:\s*(\d+)\]", ai_reply)
+        ai_score = int(score_match.group(1)) if score_match else None
+
+        if triggered_command:
+            print(f"[TITAN-EVENT] Protocol: {triggered_command} | Pilot Score: {ai_score}")
+            try:
+                manager = HolographicManager()
+                # We pass 'ai_score' as the override. The Manager will obey.
+                threading.Thread(
+                    target=manager.process_hologram_sync, 
+                    args=(user_input,),
+                    kwargs={'override_score': ai_score} 
+                ).start()
+            except Exception as e:
+                print(f"[TITAN-WARNING] Auto-Commit failed: {e}")
+        
+        # Optional: Passive sync (No override, let System decide)
+        else:
+           try:
+               manager = HolographicManager()
+               threading.Thread(target=manager.process_hologram_sync, args=(user_input,)).start()
+           except:
+               pass
+
+        return {"ai_text": ai_reply}
+    
+    return {"status": "FAILURE", "error": f"Unknown Action: {action}"}
 
     # --- 2. CONSTRUCT THE FULL PROMPT ---
     # Order: System Prompt (from JSX) -> Core Echoes (DB) -> Recent Chat (JSX) -> New Input
