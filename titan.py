@@ -12,8 +12,9 @@ import threading
 from datetime import datetime
 from google import genai
 from google.genai import types
-from fastapi import FastAPI, BackgroundTasks, HTTPException
+from fastapi import FastAPI, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional, List, Set
 
@@ -1002,22 +1003,28 @@ def get_graph_data():
             conn.close()
 
 
-@app.route('/', methods=['POST'])
-def chat_endpoint():
-    # --- 1. RECEIVE INPUT ---
-    data = request.json
+@app.post("/")
+async def chat_endpoint(request: Request):
+    # --- 1. RECEIVE INPUT (FastAPI Style) ---
+    # We must 'await' the JSON in FastAPI
+    try:
+        data = await request.json()
+    except:
+        data = {}
+        
     user_input = data.get('message', '')
     
     if not user_input:
-        return jsonify({"response": "Silence..."})
+        return {"response": "Silence..."}
 
     print(f"[TITAN-LOG] User Message: {user_input[:50]}...")
 
     # --- 2. THE VOICE (Gemini) ---
-    # We generate the response FIRST. This ensures the UI never hangs.
     ai_reply = "..."
     try:
-        response = gemini_client.models.generate_content(
+        # We run the synchronous Gemini call in a separate thread so it doesn't block the async server
+        # (Or we just let it block for a moment, which is fine for a personal app)
+        response = GEMINI_CLIENT.models.generate_content(
             model="gemini-2.0-flash-exp", 
             contents=user_input,
             config=types.GenerateContentConfig(
@@ -1030,22 +1037,18 @@ def chat_endpoint():
         ai_reply = "I am listening, but my voice is failing."
 
     # --- 3. THE MEMORY (HolographicManager) ---
-    # Now we safely try to save it to the Core.
-    # If this fails (Gatekeeper, Database Error, etc.), it won't stop the chat.
     try:
-        # Instantiate the correct class we just found
+        # Same logic as before: Fire and Forget
         manager = HolographicManager()
-        
-        # Run the sync (The Weaver)
-        # Note: Ideally run this in a thread so it doesn't slow down the reply
+        # Threading still works perfectly here
         threading.Thread(target=manager.process_hologram_sync, args=(user_input,)).start()
         
     except Exception as e:
-        # We log the error but we DO NOT crash the response
         print(f"[TITAN-WARNING] Memory Weave skipped: {e}")
 
     # --- 4. RESPOND ---
-    return jsonify({"response": ai_reply})
+    # FastAPI automatically converts dicts to JSON
+    return {"response": ai_reply}
 
 @app.get("/admin/pulse")
 def get_pulse():
