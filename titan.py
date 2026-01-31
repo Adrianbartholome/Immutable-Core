@@ -1000,7 +1000,43 @@ def get_graph_data():
         if conn:
             conn.close()
 
-# --- ADD THIS TO MAIN.PY ---
+
+@app.route('/', methods=['POST'])
+def chat_endpoint():
+    user_input = request.json.get('message', '')
+
+    if not user_input:
+        return jsonify({"response": "..."})
+
+    # --- PART 1: THE VOICE (Gemini) ---
+    # This runs independently. It does not need the mysterious class.
+    try:
+        response = gemini_client.models.generate_content(
+            model="gemini-2.0-flash-exp", 
+            contents=user_input
+        )
+        ai_reply = response.text
+    except Exception as e:
+        print(f"[TITAN-ERROR] Voice Failed: {e}")
+        ai_reply = "I am unable to speak."
+
+    # --- PART 2: THE MEMORY (The Mystery Class) ---
+    # We try to find the class instance to save the memory.
+    try:
+        # OPTION A: If you have a global variable named 'titan' or 'db' or 'app'
+        # titan.process_hologram_sync(user_input)
+        
+        # OPTION B: If it is inside DBManager (as VS Code suggested)
+        # instance = DBManager()
+        # instance.process_hologram_sync(user_input)
+
+        # For now, we print a log so you know it reached here.
+        print(f"[TITAN-LOG] Voice generated. Memory sync pending class identification.")
+        
+    except Exception as e:
+        print(f"[TITAN-WARNING] Memory skipped: {e}")
+
+    return jsonify({"response": ai_reply})
 
 @app.get("/admin/pulse")
 def get_pulse():
