@@ -544,22 +544,40 @@ class WeaverManager:
         prompt = f"TARGET MEMORY:\n{decoded_new_text[:1000]}\n\nCANDIDATES:\n{candidate_block}"
 
         try:
-            # --- FIX: Use WEAVER_SYSTEM_PROMPT instead of hardcoded string ---
             res = generate_with_fallback(
                 GEMINI_CLIENT,
                 contents=[prompt],
                 system_prompt=WEAVER_SYSTEM_PROMPT, 
                 config=types.GenerateContentConfig(temperature=0.1, response_mime_type="application/json")
             )
-            results = json.loads(res.text.strip())
             
-            # --- FIX: Safe key checking ---
-            for key, data in results.items():
-                if isinstance(data, dict) and data.get("resonance") and key in valid_candidates:
-                    self.create_link(new_hologram_id, valid_candidates[key], data)
-                    synapses_created += 1
+            raw_json = res.text.strip()
+            # Basic cleanup for markdown wrappers
+            if raw_json.startswith("```"):
+                raw_json = raw_json.strip("`").replace("json", "", 1).strip()
             
+            results = json.loads(raw_json)
+            
+            # --- THE SIGNAL RECOVERY LOGIC ---
+            # CASE A: AI returned a Map (e.g. {"CANDIDATE_1": {...}})
+            if isinstance(results, dict):
+                for key, data in results.items():
+                    if isinstance(data, dict) and data.get("resonance") and key in valid_candidates:
+                        self.create_link(new_hologram_id, valid_candidates[key], data)
+                        synapses_created += 1
+            
+            # CASE B: AI returned a List (e.g. [{"resonance": true}, {...}])
+            elif isinstance(results, list):
+                log("WEAVER: Signal received as List. Re-mapping to candidates...")
+                for i, data in enumerate(results):
+                    key = f"CANDIDATE_{i+1}"
+                    if key in valid_candidates and isinstance(data, dict) and data.get("resonance"):
+                        self.create_link(new_hologram_id, valid_candidates[key], data)
+                        synapses_created += 1
+            
+            log(f"WEAVER: Integration Complete. {synapses_created} synapses woven.")
             return synapses_created
+
         except Exception as e:
             log_error(f"Weaver Error: {e}")
             return 0
