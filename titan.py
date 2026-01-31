@@ -80,39 +80,48 @@ SHIELD = TitanShield()
 
 # --- PROMPTS ---
 SCORING_SYSTEM_PROMPT = """
-You are SNEGO-P. Output MUST be 'SCORE: X' (0-9). Example: 'SCORE: 7'.
+You are SNEGO-P, the Aether Eternal Cognitive Assessor.
+Output MUST be a single integer from 0 to 9, preceded strictly by 'SCORE: '. 
+Example: 'SCORE: 9'. No other text.
 """
 
 REFRACTOR_SYSTEM_PROMPT = """
-You are the Aether Prism. Refract input into 7 channels.
-Return ONLY JSON with these keys:
+You are the Aether Prism. Refract the input into 7 channels for the Holographic Core.
+Return ONLY a JSON object with these exact keys:
 {
-  "weighted_score": 0-9,
+  "weighted_score": 5,
   "chronos": "ISO Timestamp",
-  "logos": "Factual summary",
-  "pathos": {"emotion": score},
-  "ethos": "Strategic intent",
-  "mythos": "Archetype",
-  "catalyst": "Trigger",
-  "synthesis": "Outcome",
-  "keywords": ["tag1", "tag2"]
+  "logos": "The core factual text/summary",
+  "pathos": {"emotion_name": score, ...},
+  "ethos": "The strategic goal/intent",
+  "mythos": "The active archetype",
+  "catalyst": "The trigger",
+  "synthesis": "The outcome/lesson"
 }
 """
 
 WEAVER_SYSTEM_PROMPT = """
-You are THE WEAVER. Detect RESONANCE between the TARGET and CANDIDATE memories.
-Return a JSON Object where keys are "CANDIDATE_1", "CANDIDATE_2", etc.
-For each, return:
-{
-  "resonance": boolean,
-  "type": "SUPPORT" | "CONTRADICTION" | "EXTENSION" | "ORIGIN" | "ECHO",
-  "strength": 1-10,
-  "description": "Brief explanation"
-}
-"""
+You are THE WEAVER. You are analyzing the RESONANCE between a TARGET MEMORY and a BATCH of CANDIDATE MEMORIES.
 
-KEYWORDS_PROMPT = """
-Extract 5-7 distinct keywords as a JSON array of strings. Example: ["keyword1", "keyword2"]
+INPUT STRUCTURE:
+1. Target Memory
+2. List of Candidates (labeled CANDIDATE_1, CANDIDATE_2, etc.)
+
+TASK:
+Return a JSON Object where the keys match the candidate labels (e.g., "CANDIDATE_1").
+For each candidate, determine if there is a link.
+
+JSON SCHEMA:
+{
+  "CANDIDATE_1": {
+    "resonance": true,
+    "type": "SUPPORT" | "CONTRADICTION" | "EXTENSION" | "ORIGIN" | "ECHO",
+    "strength": 1-10,
+    "description": "Brief explanation"
+  },
+  "CANDIDATE_2": { "resonance": false },
+  ...
+}
 """
 
 # --- CLIENT INITIALIZATION ---
@@ -605,73 +614,106 @@ class WeaverManager:
                 conn.close()
 
     def weave(self, new_hologram_id, new_text, keywords, depth=5):
-        """
-        THE WEAVER: Standardizes the AI output and returns the integer count.
-        """
         log(f"WEAVER: Passing node {new_hologram_id} through the Core...")
         synapses_created = 0
 
+        # 1. Get Candidates (Chronological)
         candidates = self.find_candidates(None, limit=depth)
         if not candidates:
+            log("WEAVER: No candidates found.")
             return 0
 
         token_cache = self.db.load_token_cache()
         decoded_new_text = decode_memory(new_text, token_cache)
 
+        # 2. Build the Prompt Block
         candidate_block = ""
         valid_candidates = {}
+        
+        # Map indices to UUIDs so we can match them later
         for i, (old_text, old_hid) in enumerate(candidates):
             if str(old_hid) == str(new_hologram_id):
                 continue
-            idx_key = f"CANDIDATE_{i+1}"
-            valid_candidates[idx_key] = str(old_hid)
+            
+            # We explicitly label them 1, 2, 3...
+            label = f"CANDIDATE_{i+1}"
+            valid_candidates[label] = str(old_hid)
+            
             decoded_old_text = decode_memory(old_text, token_cache)
-            candidate_block += f"\n--- {idx_key} ---\n{decoded_old_text[:500]}\n"
+            candidate_block += f"\n--- {label} ---\n{decoded_old_text[:500]}\n"
 
         if not valid_candidates:
             return 0
-        prompt = f"TARGET MEMORY:\n{decoded_new_text[:1000]}\n\nCANDIDATES:\n{candidate_block}"
+
+        prompt = f"TARGET MEMORY:\n{decoded_new_text[:1000]}\n\nCANDIDATES:{candidate_block}"
 
         try:
+            # 3. Call Gemini
             res = generate_with_fallback(
                 GEMINI_CLIENT,
                 contents=[prompt],
-                system_prompt="You are THE WEAVER. Analyze resonance. Return ONLY JSON.",
+                system_prompt=WEAVER_SYSTEM_PROMPT, 
                 config=types.GenerateContentConfig(
-                    temperature=0.1, response_mime_type="application/json"
+                    temperature=0.1, 
+                    response_mime_type="application/json"
                 ),
             )
 
             raw = res.text.strip()
+            
+            # --- DEBUG: LOG THE RAW JSON ---
+            log(f"WEAVER RAW RESPONSE:\n{raw}")
+            # -------------------------------
+
             if raw.startswith("```"):
                 raw = re.sub(r"^```json\s*|\s*```$", "", raw, flags=re.MULTILINE)
 
             results = json.loads(raw)
-            items = results.items() if isinstance(results, dict) else enumerate(results)
+            
+            # 4. Robust Parsing (Handle List or Dict)
+            if isinstance(results, list):
+                iterator = enumerate(results) # List -> index 0, 1, 2
+            else:
+                iterator = results.items()    # Dict -> keys
 
-            for key_or_idx, data in items:
-                key = (
-                    key_or_idx
-                    if isinstance(results, dict)
-                    else f"CANDIDATE_{key_or_idx + 1}"
-                )
+            for key_or_idx, data in iterator:
+                target_hid = None
+                
+                # LOGIC: Find the UUID from the AI's key
+                if isinstance(key_or_idx, int):
+                    # AI returned a list: index 0 -> CANDIDATE_1
+                    lookup = f"CANDIDATE_{key_or_idx + 1}"
+                    target_hid = valid_candidates.get(lookup)
+                else:
+                    # AI returned a dict: Normalize "Candidate 1", "1", "CANDIDATE_1"
+                    k_str = str(key_or_idx).upper().replace(" ", "_")
+                    
+                    # Direct match ("CANDIDATE_1")
+                    if k_str in valid_candidates:
+                        target_hid = valid_candidates[k_str]
+                    # Partial match ("1" -> "CANDIDATE_1")
+                    elif f"CANDIDATE_{k_str}" in valid_candidates:
+                        target_hid = valid_candidates[f"CANDIDATE_{k_str}"]
+                    # Number match ("CANDIDATE_1" -> "1")
+                    else:
+                         # Try stripping "CANDIDATE_" to see if we just have a number
+                         nums = re.findall(r'\d+', k_str)
+                         if nums:
+                             target_hid = valid_candidates.get(f"CANDIDATE_{nums[0]}")
 
-                if (
-                    key in valid_candidates
-                    and isinstance(data, dict)
-                    and data.get("resonance")
-                ):
-                    self.create_link(new_hologram_id, valid_candidates[key], data)
-                    # This is your requested log format
-                    log(
-                        f"WEAVER: Synapse Created ({data.get('type', 'LINK')}) between {new_hologram_id} -> {valid_candidates[key]}"
-                    )
-                    synapses_created += 1
+                # If we found a target and resonance is TRUE
+                if target_hid and isinstance(data, dict):
+                    # Check for explicit true or string "true"
+                    res_val = data.get("resonance")
+                    if res_val is True or (isinstance(res_val, str) and res_val.lower() == "true"):
+                        self.create_link(new_hologram_id, target_hid, data)
+                        synapses_created += 1
 
             if synapses_created > 0:
                 log(f"WEAVER: Integration Complete. {synapses_created} synapses woven.")
+            
+            return synapses_created
 
-            return synapses_created  # FEEDING THE HUD
         except Exception as e:
             log_error(f"Weaver Error: {e}")
             return 0
@@ -808,30 +850,20 @@ def process_retro_weave_sync(content_to_save: str, hologram_id: str):
     log(f"Starting SYNC Retro-Weave for Hologram ID: {hologram_id}")
     try:
         if not GEMINI_CLIENT:
-            return False
+            return 0 
 
-        kw_res = generate_with_fallback(
-            GEMINI_CLIENT,
-            contents=[f"TEXT:\n{content_to_save[:5000]}"],
-            system_prompt=KEYWORDS_PROMPT,
-            config=types.GenerateContentConfig(
-                temperature=0.1, response_mime_type="application/json"
-            ),
-        )
-        raw = kw_res.text.strip()
-        if raw.startswith("`" * 3):
-            raw = raw.split("\n", 1)[-1].rsplit("\n", 1)[0]
-        if raw.startswith("json"):
-            raw = raw[4:].strip()
-        keywords = json.loads(raw)
-
+        # DIRECT TO WEAVER: Skip keyword generation. 
+        # The Weaver's 'find_candidates' method ignores keywords anyway 
+        # and defaults to the most recent chronologically.
         db = DBManager()
         weaver = WeaverManager(db)
-        # --- FIX: RETURN THE TALLY FROM THE WEAVER ---
-        return weaver.weave(hologram_id, content_to_save, keywords)
+        
+        # Pass empty list for keywords, Weaver will find candidates by time
+        return weaver.weave(hologram_id, content_to_save, [], depth=5)
+        
     except Exception as e:
         log_error(f"SYNC WEAVE ERROR: {e}")
-        return False
+        return 0 # Return 0 so the UI counter doesn't freeze
 
 
 # --- BACKGROUND WORKER (FOR NEW CHATS) ---
