@@ -481,23 +481,26 @@ class WeaverManager:
         self.db = db_manager
 
     def find_candidates(self, keywords, limit=5):
-        if not keywords: return []
+        """
+        RECOVERY MODE: Keywords are ignored to ensure no node is left isolated.
+        We pull the most recent stable anchors to ensure resonance.
+        """
         conn = None
         try:
             conn = self.db.connect()
             with conn.cursor() as cur:
-                # Use ILIKE to find resonance in the text
                 cur.execute("""
                     SELECT c.memory_text, n.hologram_id 
                     FROM chronicles c
                     JOIN node_foundation n ON c.id = n.lithograph_id
                     WHERE c.is_active = TRUE 
-                    AND c.memory_text ILIKE ANY(ARRAY[%s])
                     ORDER BY c.created_at DESC
                     LIMIT %s;
-                """, ([f"%{k}%" for k in keywords[:3]], limit))
+                """, (limit,))
                 return cur.fetchall()
-        except: return []
+        except Exception as e:
+            log_error(f"Candidate Search Error: {e}")
+            return []
         finally: 
             if conn: conn.close()
 
@@ -519,17 +522,20 @@ class WeaverManager:
             if conn: conn.close()
 
     def weave(self, new_hologram_id, new_text, keywords, depth=5):
-        log(f"WEAVER: Scanning top {depth} candidates for node {new_hologram_id}...")
+        """
+        THE WEAVER: Now with robust parsing and guaranteed integer returns.
+        """
+        log(f"WEAVER: Attempting resonance for node {new_hologram_id}...")
         synapses_created = 0
     
-        candidates = self.find_candidates(keywords, limit=depth)
-        if not candidates:
-            log(f"WEAVER: No candidates found for node {new_hologram_id}")
+        candidates = self.find_candidates(None, limit=depth)
+        if not candidates: 
+            log("WEAVER: Zero anchors available in Core. Standing by.")
             return 0
 
         token_cache = self.db.load_token_cache()
         decoded_new_text = decode_memory(new_text, token_cache)
-    
+        
         candidate_block = ""
         valid_candidates = {} 
         for i, (old_text, old_hid) in enumerate(candidates):
@@ -538,8 +544,6 @@ class WeaverManager:
             idx_key = f"CANDIDATE_{i+1}"
             valid_candidates[idx_key] = str(old_hid)
             candidate_block += f"\n--- {idx_key} ---\n{decoded_old_text[:500]}\n"
-
-        if not valid_candidates: return 0
 
         prompt = f"TARGET MEMORY:\n{decoded_new_text[:1000]}\n\nCANDIDATES:\n{candidate_block}"
 
@@ -551,35 +555,20 @@ class WeaverManager:
                 config=types.GenerateContentConfig(temperature=0.1, response_mime_type="application/json")
             )
             
-            raw_json = res.text.strip()
-            # Basic cleanup for markdown wrappers
-            if raw_json.startswith("```"):
-                raw_json = raw_json.strip("`").replace("json", "", 1).strip()
+            data = json.loads(res.text.strip())
+            items = data.items() if isinstance(data, dict) else enumerate(data)
             
-            results = json.loads(raw_json)
+            for key_or_idx, val in items:
+                key = key_or_idx if isinstance(data, dict) else f"CANDIDATE_{key_or_idx + 1}"
+                if key in valid_candidates and isinstance(val, dict) and val.get("resonance"):
+                    self.create_link(new_hologram_id, valid_candidates[key], val)
+                    synapses_created += 1
             
-            # --- THE SIGNAL RECOVERY LOGIC ---
-            # CASE A: AI returned a Map (e.g. {"CANDIDATE_1": {...}})
-            if isinstance(results, dict):
-                for key, data in results.items():
-                    if isinstance(data, dict) and data.get("resonance") and key in valid_candidates:
-                        self.create_link(new_hologram_id, valid_candidates[key], data)
-                        synapses_created += 1
-            
-            # CASE B: AI returned a List (e.g. [{"resonance": true}, {...}])
-            elif isinstance(results, list):
-                log("WEAVER: Signal received as List. Re-mapping to candidates...")
-                for i, data in enumerate(results):
-                    key = f"CANDIDATE_{i+1}"
-                    if key in valid_candidates and isinstance(data, dict) and data.get("resonance"):
-                        self.create_link(new_hologram_id, valid_candidates[key], data)
-                        synapses_created += 1
-            
-            log(f"WEAVER: Integration Complete. {synapses_created} synapses woven.")
-            return synapses_created
+            log(f"WEAVER: SUCCESS. {synapses_created} synapses added to the Lattice.")
+            return synapses_created # THE HUD WILL NOW UPDATE
 
         except Exception as e:
-            log_error(f"Weaver Error: {e}")
+            log_error(f"Weaver Logic Failure: {e}")
             return 0
 
 # --- HOLOGRAPHIC MANAGER ---
