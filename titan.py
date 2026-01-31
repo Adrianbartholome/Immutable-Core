@@ -1023,7 +1023,7 @@ async def chat_endpoint(request: Request):
     ai_reply = "..."
     try:
         response = GEMINI_CLIENT.models.generate_content(
-            model="gemini-2.0-flash-exp", 
+            model="gemini-2.5-flash", 
             contents=user_input,
             config=types.GenerateContentConfig(
                 temperature=0.7 
