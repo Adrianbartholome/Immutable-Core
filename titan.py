@@ -718,33 +718,30 @@ class WeaverManager:
             log_error(f"Weaver Error: {e}")
             return 0
 
-    def create_link(self, source_hid, target_hid, link_data):
-        conn = None
+    def create_link(self, source_id, target_id, data):
+        # Prevent self-linking
+        if str(source_id) == str(target_id):
+            return False
+
         try:
-            conn = self.db.connect()
-            lid = str(uuid.uuid4())
-            with conn.cursor() as cur:
+            with self.conn.cursor() as cur:
+                # HEBBIAN UPSERT:
+                # Note the column names: source_hologram_id, target_hologram_id
                 cur.execute(
                     """
-                    INSERT INTO node_links (id, source_hologram_id, target_hologram_id, link_type, strength, description)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                """,
-                    (
-                        lid,
-                        source_hid,
-                        target_hid,
-                        link_data["type"],
-                        link_data["strength"],
-                        link_data["description"],
-                    ),
+                    INSERT INTO node_links (source_hologram_id, target_hologram_id, type, weight, description)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (source_hologram_id, target_hologram_id) 
+                    DO UPDATE SET 
+                        weight = node_links.weight + 1
+                    """,
+                    (source_id, target_id, data.get('type', 'related'), data.get('strength', 5), data.get('description', ''))
                 )
-            conn.commit()
-            log(f"WEAVER: Synapse Created ({link_data['type']})")
+            self.conn.commit()
+            return True
         except Exception as e:
-            log_error(f"Weaver Link Error: {e}")
-        finally:
-            if conn:
-                conn.close()
+            log_error(f"Link Error: {e}")
+            return False
 
 
 # --- HOLOGRAPHIC MANAGER ---
