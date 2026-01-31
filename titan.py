@@ -89,6 +89,7 @@ REFRACTOR_SYSTEM_PROMPT = """
 You are the Aether Prism. Refract the input into 7 channels for the Holographic Core.
 Return ONLY a JSON object with these exact keys:
 {
+  "weighted_score": 1-10, 
   "chronos": "ISO Timestamp",
   "logos": "The core factual text/summary",
   "pathos": {"emotion_name": score, ...},
@@ -808,10 +809,10 @@ def process_hologram_sync(content_to_save: str, litho_id: int, gate_threshold: i
             )
             return synapse_count  # --- FIX: Return integer count ---
 
-        return False
+        return 0
     except Exception as e:
         log_error(f"❌ Sync Failed for ID {litho_id}: {e}")
-        return False
+        return 0
 
 
 def process_retro_weave_sync(content_to_save: str, hologram_id: str):
