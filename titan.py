@@ -147,6 +147,15 @@ MODEL_CASCADE = ["gemini-2.5-flash", "gemini-3-flash-preview"]
 
 CORTEX_LATEST_LOG = "Ready."
 
+# --- 1. GLOBAL STATUS VARIABLE (The Whiteboard) ---
+CURRENT_SYSTEM_STATUS = "System Ready."
+
+def update_system_status(msg):
+    """Updates the global variable so the /cortex/status endpoint sees it."""
+    global CURRENT_SYSTEM_STATUS
+    print(f"[THREAD REPORT] {msg}") # Use a distinct tag to see it in terminal
+    CURRENT_SYSTEM_STATUS = msg
+
 def generate_with_fallback(client, contents, system_prompt=None, config=None):
     if not client:
         return None
@@ -1473,6 +1482,12 @@ def get_last_anchor():
     except Exception as e:
         return {"status": "FAILURE", "error": str(e)}
 
+# --- 2. THE STATUS ENDPOINT (React polls this) ---
+@app.get("/cortex/status")
+def get_status():
+    return {"message": CURRENT_SYSTEM_STATUS}
+
+# --- 3. THE TRIGGER (Now passes the reporter!) ---
 @app.post("/admin/recalculate_map")
 def recalculate_map(payload: dict):
     spacing = payload.get("spacing", 1.0)
@@ -1480,14 +1495,18 @@ def recalculate_map(payload: dict):
     scale = payload.get("scale", 1000.0)
     db_string = get_db_connection_string()
     
-    # Replace background_tasks.add_task with a Thread:
+    # Reset status immediately
+    update_system_status("Initializing Physics Engine...")
+
+    # START THE THREAD
+    # Note: We are now passing 'update_system_status' as the 5th arg!
     thread = threading.Thread(
         target=regenerate_neural_map, 
-        args=(db_string, spacing, cluster_strength, scale)
+        args=(db_string, spacing, cluster_strength, scale, update_system_status)
     )
     thread.start()
     
-    return {"status": "SUCCESS", "message": "Neural remapping initiated in background."}
+    return {"status": "SUCCESS", "message": "Neural remapping initiated."}
 
 @app.get("/cortex/synapses")
 def get_synapses():
@@ -1508,10 +1527,6 @@ def get_synapses():
         return {"status": "FAILURE", "error": str(e)}
     finally:
         conn.close()
-
-@app.get("/cortex/status")
-def get_cortex_status():
-    return {"status": "SUCCESS", "message": CORTEX_LATEST_LOG}
 
 @app.get("/admin/pulse")
 def get_pulse():
