@@ -11,12 +11,8 @@ DIMENSIONS = 3
 
 def regenerate_neural_map(db_connection_string, spacing=1.0, cluster_strength=1.0, status_callback=None):
     """
-    spacing: Controls 'k' (Optimal distance). Higher = more spread out islands.
-    cluster_strength: Multiplier for edge weights. Higher = tighter local groups.
-    status_callback: Function to send real-time logs to the frontend.
+    Mission-Aware Cartographer: Maps the 'synthesis' from node_mission to the star.
     """
-    
-    # Internal helper to log to both Console and Frontend
     def log(msg):
         print(msg)
         if status_callback:
@@ -28,24 +24,32 @@ def regenerate_neural_map(db_connection_string, spacing=1.0, cluster_strength=1.
     conn = psycopg2.connect(db_connection_string)
     
     # --- PHASE 1: FETCH DATA ---
-    log("[CORTEX] Phase 1: Downloading Structure...")
+    log("[CORTEX] Phase 1: Downloading Structure & Synthesis...")
     nodes = []
     edges = []
     
     try:
         with conn.cursor() as cur:
-            # FIX: Just use the ID as the label for now to prevent crashes
-            # (Later we can join with a text table if we find one)
+            # JOIN node_foundation with node_mission
+            # Uses 'synthesis' as the label. If null, falls back to ID.
             cur.execute("""
-                SELECT hologram_id, 'Node ' || SUBSTRING(hologram_id::text, 1, 8) as label
-                FROM node_foundation
+                SELECT 
+                    nf.hologram_id, 
+                    COALESCE(nm.synthesis, 'Node ' || SUBSTRING(nf.hologram_id::text, 1, 8)) as label
+                FROM node_foundation nf
+                LEFT JOIN node_mission nm ON nf.hologram_id = nm.hologram_id
             """)
             nodes = cur.fetchall()
             
+            # Fetch Synapses
             cur.execute("SELECT source_hologram_id, target_hologram_id, strength FROM node_links")
             edges = cur.fetchall()
+            
+    except Exception as e:
+        log(f"[CORTEX] ⚠️ SQL Error (Check node_mission table!): {e}")
+        return
     finally:
-        conn.close() # Close connection so we don't timeout during math
+        conn.close()
 
     if not nodes:
         log("[CORTEX] ⚠️  Empty Graph. Skipping.")
@@ -55,30 +59,29 @@ def regenerate_neural_map(db_connection_string, spacing=1.0, cluster_strength=1.
     log(f"[CORTEX] Phase 2: Calculating Forces for {len(nodes)} nodes...")
     G = nx.Graph()
     
-    # Map ID -> Label
     labels = {}
     for n in nodes:
         node_id = str(n[0])
-        label = n[1] if n[1] else "Unknown Artifact"
+        label = n[1] 
         G.add_node(node_id)
         labels[node_id] = label
         
     for source, target, strength in edges:
         s_str, t_str = str(source), str(target)
         if s_str in G and t_str in G:
-            # CLUMPING LOGIC: Multiply strength by user's cluster_strength
             base_weight = float(strength) if strength else 1.0
             G.add_edge(s_str, t_str, weight=base_weight * cluster_strength)
 
-    # SPACING LOGIC
+    # Physics
     node_count = G.number_of_nodes()
     base_k = 1.0 / np.sqrt(node_count) if node_count > 0 else 0.1
     final_k = base_k * spacing
 
-    # The Heavy Math
-    pos = nx.spring_layout(G, dim=DIMENSIONS, k=final_k, iterations=DEFAULT_ITERATIONS, scale=DEFAULT_SCALE, seed=42)
+    pos = nx.spring_layout(G, dim=3, k=final_k, iterations=50, scale=1000.0, seed=42)
 
-    # Prepare Batch Data
+    # --- PHASE 3: UPLOAD ---
+    log("[CORTEX] Phase 3: Uploading Map...")
+    
     batch_data = []
     for node_id, coords in pos.items():
         degree = G.degree[node_id]
@@ -96,13 +99,10 @@ def regenerate_neural_map(db_connection_string, spacing=1.0, cluster_strength=1.
 
         batch_data.append((node_id, float(coords[0]), float(coords[1]), float(coords[2]), r, g, b, size, label))
 
-    # --- PHASE 3: UPLOAD ---
-    log("[CORTEX] Phase 3: Uploading Map...")
-    
-    conn = psycopg2.connect(db_connection_string) # Re-connect
+    conn = psycopg2.connect(db_connection_string)
     try:
         with conn.cursor() as cur:
-            # Ensure Table Exists
+            # Ensure tables exist
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS cortex_map (
                     hologram_id UUID PRIMARY KEY,
@@ -112,11 +112,9 @@ def regenerate_neural_map(db_connection_string, spacing=1.0, cluster_strength=1.
                     last_updated TIMESTAMP DEFAULT NOW()
                 );
             """)
-            
-            # Ensure Label Column Exists
             cur.execute("ALTER TABLE cortex_map ADD COLUMN IF NOT EXISTS label TEXT;")
 
-            # Upsert Data
+            # Upsert
             query = """
                 INSERT INTO cortex_map (hologram_id, x, y, z, r, g, b, size, label)
                 VALUES %s
