@@ -1244,32 +1244,44 @@ async def chat_endpoint(request: Request):
         if triggered_command:
             print(f"[TITAN-EVENT] Protocol: {triggered_command} | Pilot Score: {ai_score}")
             
+            # --- DYNAMIC CONTENT SELECTION ---
+            # Default: Save what the User said (Memory/File)
+            content_to_save = user_input
+            
+            # Exception: If it's a SUMMARY, we save what AETHER generated.
+            if triggered_command == "[COMMIT_SUMMARY]":
+                # Clean the tag out of the text so we don't save "[COMMIT_SUMMARY]" forever
+                content_to_save = ai_reply.replace(triggered_command, "").strip()
+                # Remove score tag if present to keep it clean
+                if score_match:
+                    content_to_save = content_to_save.replace(score_match.group(0), "").strip()
+                
+                print(f"[TITAN-LOG] Switching save target to AI Output (Summary mode).")
+
             try:
                 # --- STEP 1: THE CHRONICLE (Log It) ---
-                # We reuse the DB logic from the Button Path
                 prev_hash = db.get_latest_hash()
                 token_cache = db.load_token_cache()
 
-                # Commit to Chronicles first
+                # Use 'content_to_save' instead of 'user_input'
                 litho_result = db.commit_lithograph(
                     previous_hash=prev_hash,
-                    raw_text=user_input, 
-                    client=None, # We pass None because we trust Aether's score (or default)
+                    raw_text=content_to_save, # <--- DYNAMIC VARIABLE
+                    client=None, 
                     token_cache=token_cache,
-                    manual_score=ai_score # Pass Aether's voice score here
+                    manual_score=ai_score 
                 )
 
                 if litho_result['status'] == 'SUCCESS':
                     litho_id = litho_result['litho_id']
                     
                     # --- STEP 2: THE HOLOGRAPH (Graph It) ---
-                    # Now we have a valid ID to anchor the graph node
                     threading.Thread(
                         target=process_hologram_sync, 
-                        args=(user_input,),
+                        args=(content_to_save,), # <--- DYNAMIC VARIABLE
                         kwargs={
                             'override_score': ai_score,
-                            'litho_id': litho_id # <--- The Missing Link
+                            'litho_id': litho_id
                         } 
                     ).start()
                 else:
