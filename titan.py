@@ -1234,7 +1234,7 @@ async def chat_endpoint(request: Request):
             ai_reply = f"Signal Error: {e}"
 
         # 4. TRIGGER SCANNING (The Voice Command)
-        triggers = ["[COMMIT_MEMORY]", "[COMMIT_SUMMARY]", "[COMMIT_FILE]"]
+        triggers = ["[COMMIT_SUMMARY]", "[COMMIT_MEMORY]", "[COMMIT_FILE]"]
         triggered_command = next((t for t in triggers if t in ai_reply), None)
 
         # Parse Score from Voice (e.g., [SCORE: 9])
