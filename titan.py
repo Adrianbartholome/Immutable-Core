@@ -1311,6 +1311,26 @@ async def chat_endpoint(request: Request):
 
     return {"status": "FAILURE", "error": f"Unknown Action: {action}"}
 
+@app.get("/cortex/map")
+def get_neural_map():
+    db = DBManager()
+    conn = db.connect()
+    try:
+        with conn.cursor() as cur:
+            # We fetch simple arrays for minimal JSON size
+            # Format: [id, x, y, z, r, g, b, size]
+            cur.execute("SELECT hologram_id, x, y, z, r, g, b, size FROM cortex_map")
+            data = cur.fetchall()
+            
+        # Convert to a lightweight list of lists
+        # UUIDs must be strings for JSON
+        packed_data = [[str(r[0]), r[1], r[2], r[3], r[4], r[5], r[6], r[7]] for r in data]
+        
+        return {"status": "SUCCESS", "count": len(packed_data), "points": packed_data}
+    except Exception as e:
+        return {"status": "FAILURE", "error": str(e)}
+    finally:
+        conn.close()
 
 @app.get("/admin/pulse")
 def get_pulse():
