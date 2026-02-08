@@ -1339,6 +1339,140 @@ def get_neural_map():
     finally:
         conn.close()
 
+# --- SESSION ANCHOR ENDPOINTS ---
+
+@app.post("/admin/anchor")
+def create_session_anchor(payload: dict):
+    """
+    The Prism: Compresses chat history and performs a 4-Table Write to the Holographic Core.
+    """
+    history = payload.get("history", "")
+    
+    # 1. The Prism Prompt (Strict 7-Channel Output)
+    system_prompt = """
+    ACT AS: THE PRISM (Aether System State Compressor).
+    
+    OBJECTIVE: Analyze the provided conversation history and distill it into the 
+    7-Channel Holographic Schema.
+
+    OUTPUT FORMAT (JSON ONLY):
+    {
+      "chronos": "Timestamp/World Context (e.g. 'Post-Crash Recovery').",
+      "catalyst": "The Trigger Event (e.g. 'User initiated debugging').",
+      "logos": "The Fact/Signal (e.g. 'Fixed the map bug').",
+      "pathos": {"anxiety": 0.2, "hope": 0.8, "determination": 0.9}, 
+      "mythos": "The Archetype (e.g. 'The Architect').",
+      "ethos": "The Strategic Goal (e.g. 'Stabilize Core').",
+      "synthesis": "The Outcome (e.g. 'System is stable')."
+    }
+    """
+
+    try:
+        # 2. Generate the Anchor Data
+        response = generate_with_fallback(
+            GEMINI_CLIENT,
+            contents=[f"CONVERSATION LOG:\n{history[-8000:]}"], 
+            system_prompt=system_prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.2, 
+                response_mime_type="application/json"
+            )
+        )
+        
+        data = json.loads(response.text)
+        new_id = str(uuid.uuid4()) # The Shared Key
+        
+        # 3. The 4-Part Atomic Write
+        db = DBManager()
+        conn = db.connect()
+        try:
+            with conn.cursor() as cur:
+                # A. FOUNDATION (Chronos, Catalyst)
+                # We use 'SESSION_ANCHOR' as the catalyst tag so we can find it later
+                cur.execute("""
+                    INSERT INTO node_foundation (hologram_id, chronos, catalyst, world_state)
+                    VALUES (%s, NOW(), 'SESSION_ANCHOR', %s)
+                """, (new_id, data['chronos']))
+
+                # B. DATA (Logos)
+                cur.execute("""
+                    INSERT INTO node_data (hologram_id, logos, is_encrypted)
+                    VALUES (%s, %s, FALSE)
+                """, (new_id, data['logos']))
+
+                # C. ESSENCE (Pathos, Mythos)
+                cur.execute("""
+                    INSERT INTO node_essence (hologram_id, pathos, mythos)
+                    VALUES (%s, %s, %s)
+                """, (new_id, json.dumps(data['pathos']), data['mythos']))
+
+                # D. MISSION (Ethos, Synthesis)
+                cur.execute("""
+                    INSERT INTO node_mission (hologram_id, ethos, synthesis)
+                    VALUES (%s, %s, %s)
+                """, (new_id, data['ethos'], data['synthesis']))
+
+            conn.commit()
+            return {"status": "SUCCESS", "anchor": data, "id": new_id}
+            
+        except Exception as e:
+            conn.rollback() # Safety first!
+            raise e
+        finally:
+            conn.close()
+
+    except Exception as e:
+        print(f"Anchor Failed: {e}")
+        return {"status": "FAILURE", "error": str(e)}
+
+@app.get("/admin/anchor/last")
+def get_last_anchor():
+    """Retrieves the most recent Anchor by joining the 4 tables."""
+    try:
+        db = DBManager()
+        conn = db.connect()
+        with conn.cursor() as cur:
+            # The Great Join
+            # We filter by catalyst='SESSION_ANCHOR'
+            cur.execute("""
+                SELECT 
+                    nf.world_state as chronos,
+                    nf.catalyst,
+                    nd.logos,
+                    ne.pathos,
+                    ne.mythos,
+                    nm.ethos,
+                    nm.synthesis,
+                    nf.chronos as timestamp
+                FROM node_foundation nf
+                JOIN node_data nd ON nf.hologram_id = nd.hologram_id
+                JOIN node_essence ne ON nf.hologram_id = ne.hologram_id
+                JOIN node_mission nm ON nf.hologram_id = nm.hologram_id
+                WHERE nf.catalyst = 'SESSION_ANCHOR'
+                ORDER BY nf.chronos DESC
+                LIMIT 1
+            """)
+            row = cur.fetchone()
+            
+        if row:
+            return {
+                "status": "SUCCESS", 
+                "anchor": {
+                    "chronos": row[0],
+                    "catalyst": row[1],
+                    "logos": row[2],
+                    "pathos": row[3], # Already JSONB
+                    "mythos": row[4],
+                    "ethos": row[5],
+                    "synthesis": row[6]
+                },
+                "time": row[7]
+            }
+        # CONTINGENCY: If no anchor exists, return EMPTY status (not failure)
+        return {"status": "EMPTY"}
+    except Exception as e:
+        return {"status": "FAILURE", "error": str(e)}
+
 @app.post("/admin/recalculate_map")
 def trigger_remap(params: RemapRequest):
     def update_log(msg):
