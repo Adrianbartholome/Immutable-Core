@@ -851,6 +851,9 @@ class HolographicManager:
             if conn:
                 conn.close()
 
+class RemapRequest(BaseModel):
+    spacing: float = 1.0
+    cluster_strength: float = 1.0
 
 # --- SYNCHRONOUS PROCESSORS ---
 
@@ -1318,14 +1321,16 @@ def get_neural_map():
     conn = db.connect()
     try:
         with conn.cursor() as cur:
-            # We fetch simple arrays for minimal JSON size
-            # Format: [id, x, y, z, r, g, b, size]
-            cur.execute("SELECT hologram_id, x, y, z, r, g, b, size FROM cortex_map")
+            # Check for label column existence to be safe
+            cur.execute("SELECT hologram_id, x, y, z, r, g, b, size, label FROM cortex_map")
             data = cur.fetchall()
             
-        # Convert to a lightweight list of lists
-        # UUIDs must be strings for JSON
-        packed_data = [[str(r[0]), r[1], r[2], r[3], r[4], r[5], r[6], r[7]] for r in data]
+        # Format: [id, x, y, z, r, g, b, size, label]
+        packed_data = []
+        for r in data:
+            # Handle null labels gracefully
+            lbl = r[8] if r[8] else "Raw Data"
+            packed_data.append([str(r[0]), r[1], r[2], r[3], r[4], r[5], r[6], r[7], lbl])
         
         return {"status": "SUCCESS", "count": len(packed_data), "points": packed_data}
     except Exception as e:
@@ -1333,21 +1338,18 @@ def get_neural_map():
     finally:
         conn.close()
 
-@app.post("/admin/recalculate_map") 
-def trigger_remap():
-    """
-    Triggers the heavy Python math in a background thread.
-    Returns immediately so the UI doesn't freeze.
-    """
+@app.post("/admin/recalculate_map")
+def trigger_remap(params: RemapRequest):
     def run_cortex_job():
-        # create a fresh DB manager just to get the string
         db = DBManager()
-        # Pass the connection string to the cortex script
-        regenerate_neural_map(db.connection_string) 
+        # Pass the slider values to the math engine
+        regenerate_neural_map(
+            db.connection_string, 
+            spacing=params.spacing, 
+            cluster_strength=params.cluster_strength
+        ) 
 
-    # Fire and forget (Background Thread)
     threading.Thread(target=run_cortex_job).start()
-    
     return {"status": "SUCCESS", "message": "Cortex re-mapping initiated."}
 
 @app.get("/cortex/synapses")
