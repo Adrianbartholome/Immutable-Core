@@ -1333,7 +1333,7 @@ def get_neural_map():
     finally:
         conn.close()
 
-@app.route("/admin/recalculate_map", methods=['POST'])
+@app.post("/admin/recalculate_map") 
 def trigger_remap():
     """
     Triggers the heavy Python math in a background thread.
