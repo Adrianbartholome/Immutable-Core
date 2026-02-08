@@ -1199,6 +1199,9 @@ async def chat_endpoint(request: Request):
     # =========================================================
     # PATH B: CHAT (The Voice)
     # =========================================================
+    # =========================================================
+    # PATH B: CHAT (The Voice)
+    # =========================================================
     elif action == 'chat':
         user_input = data.get('memory_text', '') 
         frontend_context = data.get('history', '') 
@@ -1207,13 +1210,17 @@ async def chat_endpoint(request: Request):
             return {"ai_text": "Signal lost..."}
 
         # 1. Echoes (Personality)
-        core_echoes = get_core_echoes(limit=3)
+        # We need the DB for this anyway, so let's initialize it early
+        db = DBManager()
+        
+        # (Assuming you have a helper for echoes, or use the DB directly)
+        core_echoes = get_core_echoes(limit=3) 
         echo_injection = f"\n[CORE MEMORY FRAGMENTS]\n{core_echoes}\n=========================\n" if core_echoes else ""
 
-        # 2. Prompt
+        # 2. Prompt Construction
         full_prompt = f"{frontend_context}\n{echo_injection}\nUser: {user_input}"
 
-        # 3. Voice
+        # 3. Voice Generation
         ai_reply = "..."
         try:
             response = GEMINI_CLIENT.models.generate_content(
@@ -1226,36 +1233,56 @@ async def chat_endpoint(request: Request):
             print(f"[TITAN-ERROR] Speech Failure: {e}")
             ai_reply = f"Signal Error: {e}"
 
-        # 4. PARSE TRIGGERS AND SCORE (The Override)
+        # 4. TRIGGER SCANNING (The Voice Command)
         triggers = ["[COMMIT_MEMORY]", "[COMMIT_SUMMARY]", "[COMMIT_FILE]"]
         triggered_command = next((t for t in triggers if t in ai_reply), None)
 
-        # Look for [SCORE: 9] in Aether's words
+        # Parse Score from Voice (e.g., [SCORE: 9])
         score_match = re.search(r"\[SCORE:\s*(\d+)\]", ai_reply)
         ai_score = int(score_match.group(1)) if score_match else None
 
         if triggered_command:
             print(f"[TITAN-EVENT] Protocol: {triggered_command} | Pilot Score: {ai_score}")
+            
             try:
-                # FIX: Call function directly (No 'manager.')
-                threading.Thread(
-                    target=process_hologram_sync, 
-                    args=(user_input,),
-                    kwargs={'override_score': ai_score} 
-                ).start()
-            except Exception as e:
-                print(f"[TITAN-WARNING] Auto-Commit failed: {e}")
+                # --- STEP 1: THE CHRONICLE (Log It) ---
+                # We reuse the DB logic from the Button Path
+                prev_hash = db.get_latest_hash()
+                token_cache = db.load_token_cache()
 
-        # Optional: Passive sync (No override, let System decide)
-        else:
-            try:
-                # FIX: Call function directly
-                threading.Thread(
-                    target=process_hologram_sync, 
-                    args=(user_input,)
-                ).start()
-            except:
-                pass
+                # Commit to Chronicles first
+                litho_result = db.commit_lithograph(
+                    previous_hash=prev_hash,
+                    raw_text=user_input, 
+                    client=None, # We pass None because we trust Aether's score (or default)
+                    token_cache=token_cache,
+                    manual_score=ai_score # Pass Aether's voice score here
+                )
+
+                if litho_result['status'] == 'SUCCESS':
+                    litho_id = litho_result['litho_id']
+                    
+                    # --- STEP 2: THE HOLOGRAPH (Graph It) ---
+                    # Now we have a valid ID to anchor the graph node
+                    threading.Thread(
+                        target=process_hologram_sync, 
+                        args=(user_input,),
+                        kwargs={
+                            'override_score': ai_score,
+                            'litho_id': litho_id # <--- The Missing Link
+                        } 
+                    ).start()
+                else:
+                    print(f"[TITAN-ERROR] Voice Commit Failed: {litho_result.get('error')}")
+
+            except Exception as e:
+                print(f"[TITAN-WARNING] Auto-Commit Exception: {e}")
+        
+        # Optional: Passive Sync (Background Processing)
+        # You can enable this if you want *every* message analyzed, 
+        # but usually we only want the ones Aether explicitly flags.
+        # else:
+        #    ...
 
         return {"ai_text": ai_reply}
 
