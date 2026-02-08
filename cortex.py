@@ -27,9 +27,8 @@ def regenerate_neural_map(db_connection_string, spacing=1.0, cluster_strength=1.
             # We assume node_foundation links to lithographic_ledger via lithograph_id
             # Adjust the JOIN if your schema is different!
             cur.execute("""
-                SELECT nf.hologram_id, LEFT(ll.memory_text, 100) as label
-                FROM node_foundation nf
-                LEFT JOIN lithographic_ledger ll ON nf.lithograph_id = ll.lithograph_id
+                SELECT hologram_id, 'Node ' || SUBSTRING(hologram_id::text, 1, 8) as label
+                FROM node_foundation
             """)
             nodes = cur.fetchall()
             
