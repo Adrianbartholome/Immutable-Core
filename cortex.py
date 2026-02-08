@@ -93,22 +93,30 @@ def regenerate_neural_map(db_connection_string):
                 size
             ))
 
-        with conn.cursor() as cur:
-            # Upsert (Insert or Update if exists)
-            query = """
-                INSERT INTO cortex_map (hologram_id, x, y, z, r, g, b, size, last_updated)
-                VALUES %s
-                ON CONFLICT (hologram_id) DO UPDATE 
-                SET x = EXCLUDED.x, 
-                    y = EXCLUDED.y, 
-                    z = EXCLUDED.z,
-                    r = EXCLUDED.r,
-                    g = EXCLUDED.g,
-                    b = EXCLUDED.b,
-                    size = EXCLUDED.size,
-                    last_updated = NOW();
-            """
-            psycopg2.extras.execute_values(cur, query, batch_data)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS cortex_map (
+                hologram_id UUID PRIMARY KEY,
+                x FLOAT, y FLOAT, z FLOAT,
+                r INTEGER, g INTEGER, b INTEGER, size FLOAT,
+                last_updated TIMESTAMP DEFAULT NOW()
+            );
+        """)
+            
+        # --- FIX: Removed 'last_updated' from the INSERT line ---
+        query = """
+            INSERT INTO cortex_map (hologram_id, x, y, z, r, g, b, size)
+            VALUES %s
+            ON CONFLICT (hologram_id) DO UPDATE 
+            SET x=EXCLUDED.x, 
+                y=EXCLUDED.y, 
+                z=EXCLUDED.z, 
+                r=EXCLUDED.r, 
+                g=EXCLUDED.g, 
+                b=EXCLUDED.b, 
+                size=EXCLUDED.size, 
+                last_updated=NOW()  -- We still update it on conflict!
+        """
+        psycopg2.extras.execute_values(cur, query, batch_data)
             
         conn.commit()
         duration = time.time() - start_time
