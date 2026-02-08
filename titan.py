@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional, List, Set
+from cortex import regenerate_neural_map
 
 # --- APP INITIALIZATION ---
 app = FastAPI(title="Aether Titan Core (Platinum V5.7 - Titan Shield)")
@@ -1331,6 +1332,23 @@ def get_neural_map():
         return {"status": "FAILURE", "error": str(e)}
     finally:
         conn.close()
+
+@app.route("/admin/recalculate_map", methods=['POST'])
+def trigger_remap():
+    """
+    Triggers the heavy Python math in a background thread.
+    Returns immediately so the UI doesn't freeze.
+    """
+    def run_cortex_job():
+        # create a fresh DB manager just to get the string
+        db = DBManager()
+        # Pass the connection string to the cortex script
+        regenerate_neural_map(db.connection_string) 
+
+    # Fire and forget (Background Thread)
+    threading.Thread(target=run_cortex_job).start()
+    
+    return {"status": "SUCCESS", "message": "Cortex re-mapping initiated."}
 
 @app.get("/admin/pulse")
 def get_pulse():
