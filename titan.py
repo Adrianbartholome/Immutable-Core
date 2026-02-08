@@ -145,6 +145,7 @@ except Exception as e:
 # Fallback: Stable Next-Gen (PhD-level reasoning)
 MODEL_CASCADE = ["gemini-2.5-flash", "gemini-3-flash-preview"]
 
+CORTEX_LATEST_LOG = "Ready."
 
 def generate_with_fallback(client, contents, system_prompt=None, config=None):
     if not client:
@@ -1340,17 +1341,22 @@ def get_neural_map():
 
 @app.post("/admin/recalculate_map")
 def trigger_remap(params: RemapRequest):
+    def update_log(msg):
+        global CORTEX_LATEST_LOG
+        CORTEX_LATEST_LOG = msg
+
     def run_cortex_job():
         db = DBManager()
-        # Pass the slider values to the math engine
+        # Pass our update_log function to cortex!
         regenerate_neural_map(
             db.connection_string, 
             spacing=params.spacing, 
-            cluster_strength=params.cluster_strength
+            cluster_strength=params.cluster_strength,
+            status_callback=update_log 
         ) 
 
     threading.Thread(target=run_cortex_job).start()
-    return {"status": "SUCCESS", "message": "Cortex re-mapping initiated."}
+    return {"status": "SUCCESS", "message": "Started."}
 
 @app.get("/cortex/synapses")
 def get_synapses():
@@ -1371,6 +1377,10 @@ def get_synapses():
         return {"status": "FAILURE", "error": str(e)}
     finally:
         conn.close()
+
+@app.get("/cortex/status")
+def get_cortex_status():
+    return {"status": "SUCCESS", "message": CORTEX_LATEST_LOG}
 
 @app.get("/admin/pulse")
 def get_pulse():
