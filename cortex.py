@@ -70,7 +70,7 @@ def regenerate_neural_map(db_connection_string, spacing=1.0, cluster_strength=1.
         s_str, t_str = str(source), str(target)
         if s_str in G and t_str in G:
             base_weight = float(strength) if strength else 1.0
-            G.add_edge(s_str, t_str, weight=base_weight * cluster_strength)
+            G.add_edge(s_str, t_str, weight=base_weight * (cluster_strength * 10.0))
 
     # Physics
     node_count = G.number_of_nodes()
