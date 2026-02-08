@@ -1474,23 +1474,20 @@ def get_last_anchor():
         return {"status": "FAILURE", "error": str(e)}
 
 @app.post("/admin/recalculate_map")
-def trigger_remap(params: RemapRequest):
-    def update_log(msg):
-        global CORTEX_LATEST_LOG
-        CORTEX_LATEST_LOG = msg
-
-    def run_cortex_job():
-        db = DBManager()
-        # Pass our update_log function to cortex!
-        regenerate_neural_map(
-            db.connection_string, 
-            spacing=params.spacing, 
-            cluster_strength=params.cluster_strength,
-            status_callback=update_log 
-        ) 
-
-    threading.Thread(target=run_cortex_job).start()
-    return {"status": "SUCCESS", "message": "Started."}
+def recalculate_map(payload: dict):
+    spacing = payload.get("spacing", 1.0)
+    cluster_strength = payload.get("cluster_strength", 1.0)
+    scale = payload.get("scale", 1000.0)
+    db_string = get_db_connection_string()
+    
+    # Replace background_tasks.add_task with a Thread:
+    thread = threading.Thread(
+        target=regenerate_neural_map, 
+        args=(db_string, spacing, cluster_strength, scale)
+    )
+    thread.start()
+    
+    return {"status": "SUCCESS", "message": "Neural remapping initiated in background."}
 
 @app.get("/cortex/synapses")
 def get_synapses():

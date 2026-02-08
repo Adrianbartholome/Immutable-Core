@@ -9,7 +9,7 @@ DEFAULT_SCALE = 1000.0
 DEFAULT_ITERATIONS = 50 
 DIMENSIONS = 3
 
-def regenerate_neural_map(db_connection_string, spacing=1.0, cluster_strength=1.0, status_callback=None):
+def regenerate_neural_map(db_connection_string, spacing=1.0, cluster_strength=1.0, scale=1000.0, status_callback=None):
     """
     Mission-Aware Cartographer: Maps the 'synthesis' from node_mission to the star.
     """
@@ -74,10 +74,21 @@ def regenerate_neural_map(db_connection_string, spacing=1.0, cluster_strength=1.
 
     # Physics
     node_count = G.number_of_nodes()
-    base_k = 1.0 / np.sqrt(node_count) if node_count > 0 else 0.1
-    final_k = base_k * spacing
+    # base_k is the "ideal" distance. We use spacing to multiply it.
+    base_k = (1.0 / np.sqrt(node_count)) if node_count > 0 else 0.1
+    final_k = base_k * spacing 
 
-    pos = nx.spring_layout(G, dim=3, k=final_k, iterations=50, scale=1000.0, seed=42)
+    log(f"[CORTEX] Simulating with k={final_k:.4f}, scale={scale}")
+
+    pos = nx.spring_layout(
+        G, 
+        dim=3, 
+        k=final_k, 
+        iterations=60, # Bumped slightly for stability
+        scale=scale,   # This now comes from the slider!
+        seed=42,
+        weight='weight'
+    )
 
     # --- PHASE 3: UPLOAD ---
     log("[CORTEX] Phase 3: Uploading Map...")
