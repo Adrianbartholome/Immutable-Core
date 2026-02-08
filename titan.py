@@ -1244,31 +1244,42 @@ async def chat_endpoint(request: Request):
         if triggered_command:
             print(f"[TITAN-EVENT] Protocol: {triggered_command} | Pilot Score: {ai_score}")
             
+            # 1. Clean the AI reply (remove the [COMMIT] tags and score)
+            clean_reply = ai_reply.replace(triggered_command, "").strip()
+            if score_match:
+                clean_reply = clean_reply.replace(score_match.group(0), "").strip()
+
             # --- DYNAMIC CONTENT SELECTION ---
-            # Default: Save what the User said (Memory/File)
-            content_to_save = user_input
             
-            # Exception: If it's a SUMMARY, we save what AETHER generated.
+            # CASE A: SUMMARY (Save only the AI's Output)
             if triggered_command == "[COMMIT_SUMMARY]":
-                # Clean the tag out of the text so we don't save "[COMMIT_SUMMARY]" forever
-                content_to_save = ai_reply.replace(triggered_command, "").strip()
-                # Remove score tag if present to keep it clean
-                if score_match:
-                    content_to_save = content_to_save.replace(score_match.group(0), "").strip()
-                
-                print(f"[TITAN-LOG] Switching save target to AI Output (Summary mode).")
+                content_to_save = clean_reply
+                print(f"[TITAN-LOG] Target: AI Output (Summary)")
+
+            # CASE B: MEMORY (Save the Full Conversation)
+            elif triggered_command == "[COMMIT_MEMORY]":
+                # We reconstruct the full conversation to match the Manual Button
+                # History + Current Input + The AI's latest reply
+                content_to_save = f"{frontend_context}\nUser: {user_input}\nAI: {clean_reply}"
+                print(f"[TITAN-LOG] Target: Full Context (Memory)")
+
+            # CASE C: FILE (Save the User's Input - usually code/text)
+            elif triggered_command == "[COMMIT_FILE]":
+                content_to_save = user_input
+                print(f"[TITAN-LOG] Target: User Input (File)")
+
+            else:
+                # Fallback
+                content_to_save = user_input
 
             try:
                 # --- STEP 1: THE CHRONICLE (Log It) ---
-                prev_hash = db.get_latest_hash()
-                token_cache = db.load_token_cache()
-
-                # Use 'content_to_save' instead of 'user_input'
+                # Now 'content_to_save' holds the correct data type
                 litho_result = db.commit_lithograph(
-                    previous_hash=prev_hash,
-                    raw_text=content_to_save, # <--- DYNAMIC VARIABLE
+                    previous_hash=db.get_latest_hash(),
+                    raw_text=content_to_save, 
                     client=None, 
-                    token_cache=token_cache,
+                    token_cache=db.load_token_cache(),
                     manual_score=ai_score 
                 )
 
@@ -1278,7 +1289,7 @@ async def chat_endpoint(request: Request):
                     # --- STEP 2: THE HOLOGRAPH (Graph It) ---
                     threading.Thread(
                         target=process_hologram_sync, 
-                        args=(content_to_save,), # <--- DYNAMIC VARIABLE
+                        args=(content_to_save,), 
                         kwargs={
                             'override_score': ai_score,
                             'litho_id': litho_id
