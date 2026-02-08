@@ -1350,6 +1350,26 @@ def trigger_remap():
     
     return {"status": "SUCCESS", "message": "Cortex re-mapping initiated."}
 
+@app.get("/cortex/synapses")
+def get_synapses():
+    db = DBManager()
+    conn = db.connect()
+    try:
+        with conn.cursor() as cur:
+            # Fetch all connections (source -> target)
+            cur.execute("SELECT source_hologram_id, target_hologram_id FROM node_links")
+            data = cur.fetchall()
+            
+        # Convert UUIDs to strings for JSON
+        # Format: [[source_id, target_id], ...]
+        synapses = [[str(r[0]), str(r[1])] for r in data]
+        
+        return {"status": "SUCCESS", "count": len(synapses), "synapses": synapses}
+    except Exception as e:
+        return {"status": "FAILURE", "error": str(e)}
+    finally:
+        conn.close()
+
 @app.get("/admin/pulse")
 def get_pulse():
     """Returns the live heartbeat of the system (Total Synapses)."""
