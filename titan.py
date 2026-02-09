@@ -1351,10 +1351,16 @@ def get_neural_map():
 # --- SESSION ANCHOR ENDPOINTS ---
 
 @app.post("/admin/anchor")
-def create_session_anchor(payload: dict):
+async def create_session_anchor(request: Request):
     """
     The Prism: Compresses chat history and performs a 4-Table Write to the Holographic Core.
     """
+    try:
+        payload = await request.json()
+    except Exception as e:
+        log_error(f"Anchor Request Body Error: {e}")
+        return {"status": "FAILURE", "error": "Invalid request body or no content provided"}
+        
     history = payload.get("history", "")
     
     # 1. The Prism Prompt (Strict 7-Channel Output)
