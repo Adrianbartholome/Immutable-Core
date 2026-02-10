@@ -11,33 +11,37 @@ DIMENSIONS = 3
 
 def regenerate_neural_map(db_connection_string, spacing=1.0, cluster_strength=1.0, scale=1000.0, status_callback=None):
     """
-    Mission-Aware Cartographer: Maps the 'synthesis' from node_mission to the star.
+    Mission-Aware Cartographer V2: Maps Structure, Synthesis, AND Soul.
     """
     def log(msg):
         print(msg)
         if status_callback:
             status_callback(msg)
 
-    log(f"[CORTEX] 🗺️  Starting Cartography (Spacing: {spacing}, Cluster: {cluster_strength})...")
+    log(f"[CORTEX] 💎 Starting Prism Cartography (Spacing: {spacing}, Scale: {scale})...")
     start_time = time.time()
     
     conn = psycopg2.connect(db_connection_string)
     
-    # --- PHASE 1: FETCH DATA ---
-    log("[CORTEX] Phase 1: Downloading Structure & Synthesis...")
+    # --- PHASE 1: FETCH DATA (Now with Soul Packet) ---
+    log("[CORTEX] Phase 1: Downloading Structure, Synthesis & Essence...")
     nodes = []
     edges = []
     
     try:
         with conn.cursor() as cur:
-            # JOIN node_foundation with node_mission
-            # Uses 'synthesis' as the label. If null, falls back to ID.
+            # JOIN node_foundation, node_mission, AND node_essence
+            # We extract the JSONB fields for the Prism Engine
             cur.execute("""
                 SELECT 
                     nf.hologram_id, 
-                    COALESCE(nm.synthesis, 'Node ' || SUBSTRING(nf.hologram_id::text, 1, 8)) as label
+                    COALESCE(nm.synthesis, 'Node ' || SUBSTRING(nf.hologram_id::text, 1, 8)) as label,
+                    (ne.pathos->>'valence')::float as val,
+                    (ne.pathos->>'arousal')::float as aro,
+                    ne.pathos->>'dominant_emotion' as emo
                 FROM node_foundation nf
                 LEFT JOIN node_mission nm ON nf.hologram_id = nm.hologram_id
+                LEFT JOIN node_essence ne ON nf.hologram_id = ne.id
             """)
             nodes = cur.fetchall()
             
@@ -46,25 +50,38 @@ def regenerate_neural_map(db_connection_string, spacing=1.0, cluster_strength=1.
             edges = cur.fetchall()
             
     except Exception as e:
-        log(f"[CORTEX] ⚠️ SQL Error (Check node_mission table!): {e}")
+        log(f"[CORTEX] ⚠️ SQL Error: {e}")
         return
     finally:
         conn.close()
 
     if not nodes:
-        log("[CORTEX] ⚠️  Empty Graph. Skipping.")
+        log("[CORTEX] ⚠️ Empty Graph. Skipping.")
         return
 
     # --- PHASE 2: CALCULATE PHYSICS ---
     log(f"[CORTEX] Phase 2: Calculating Forces for {len(nodes)} nodes...")
     G = nx.Graph()
     
-    labels = {}
+    # Store metadata for lookup after physics loop
+    meta = {} 
+    
     for n in nodes:
         node_id = str(n[0])
-        label = n[1] 
+        label = n[1]
+        
+        # Capture the Soul Data (Default to Neutral if missing)
+        valence = n[2] if n[2] is not None else 0.0
+        arousal = n[3] if n[3] is not None else 0.0
+        emotion = n[4] if n[4] else "neutral"
+        
         G.add_node(node_id)
-        labels[node_id] = label
+        meta[node_id] = {
+            'label': label,
+            'v': valence,
+            'a': arousal,
+            'e': emotion
+        }
         
     for source, target, strength in edges:
         s_str, t_str = str(source), str(target)
@@ -72,33 +89,32 @@ def regenerate_neural_map(db_connection_string, spacing=1.0, cluster_strength=1.
             base_weight = float(strength) if strength else 1.0
             G.add_edge(s_str, t_str, weight=base_weight * (cluster_strength * 10.0))
 
-    # Physics
+    # Physics Engine
     node_count = G.number_of_nodes()
-    # base_k is the "ideal" distance. We use spacing to multiply it.
     base_k = (1.0 / np.sqrt(node_count)) if node_count > 0 else 0.1
     final_k = base_k * spacing 
-
-    log(f"[CORTEX] Simulating with k={final_k:.4f}, scale={scale}")
 
     pos = nx.spring_layout(
         G, 
         dim=3, 
         k=final_k, 
-        iterations=60, # Bumped slightly for stability
-        scale=scale,   # This now comes from the slider!
+        iterations=60, 
+        scale=scale, 
         seed=42,
         weight='weight'
     )
 
-    # --- PHASE 3: UPLOAD ---
-    log("[CORTEX] Phase 3: Uploading Map...")
+    # --- PHASE 3: UPLOAD (Now with Prism Columns) ---
+    log("[CORTEX] Phase 3: Uploading Prism Map...")
     
     batch_data = []
     for node_id, coords in pos.items():
         degree = G.degree[node_id]
-        label = labels.get(node_id, "Unknown")
         
-        # Color Logic
+        # Retrieve Meta
+        m = meta.get(node_id, {'label': 'Unknown', 'v':0, 'a':0, 'e':'neutral'})
+        
+        # Color Logic (Standard Synaptic Mode)
         r, g, b = 100, 200, 255
         size = 1.5
         if degree > 5: 
@@ -108,12 +124,19 @@ def regenerate_neural_map(db_connection_string, spacing=1.0, cluster_strength=1.
             size = 5.0
             r, g, b = 255, 200, 50
 
-        batch_data.append((node_id, float(coords[0]), float(coords[1]), float(coords[2]), r, g, b, size, label))
+        # Append the FULL packet
+        batch_data.append((
+            node_id, 
+            float(coords[0]), float(coords[1]), float(coords[2]), 
+            r, g, b, size, 
+            m['label'],
+            m['v'], m['a'], m['e'] # <--- The Soul Packet
+        ))
 
     conn = psycopg2.connect(db_connection_string)
     try:
         with conn.cursor() as cur:
-            # Ensure tables exist
+            # 1. Update Table Schema (Idempotent)
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS cortex_map (
                     hologram_id UUID PRIMARY KEY,
@@ -123,21 +146,31 @@ def regenerate_neural_map(db_connection_string, spacing=1.0, cluster_strength=1.
                     last_updated TIMESTAMP DEFAULT NOW()
                 );
             """)
-            cur.execute("ALTER TABLE cortex_map ADD COLUMN IF NOT EXISTS label TEXT;")
+            # Ensure new columns exist
+            cur.execute("ALTER TABLE cortex_map ADD COLUMN IF NOT EXISTS valence FLOAT;")
+            cur.execute("ALTER TABLE cortex_map ADD COLUMN IF NOT EXISTS arousal FLOAT;")
+            cur.execute("ALTER TABLE cortex_map ADD COLUMN IF NOT EXISTS dominant_emotion TEXT;")
 
-            # Upsert
+            # 2. Upsert Data
             query = """
-                INSERT INTO cortex_map (hologram_id, x, y, z, r, g, b, size, label)
+                INSERT INTO cortex_map (
+                    hologram_id, x, y, z, r, g, b, size, label, 
+                    valence, arousal, dominant_emotion
+                )
                 VALUES %s
                 ON CONFLICT (hologram_id) DO UPDATE 
                 SET x=EXCLUDED.x, y=EXCLUDED.y, z=EXCLUDED.z, 
                     r=EXCLUDED.r, g=EXCLUDED.g, b=EXCLUDED.b, 
                     size=EXCLUDED.size, label=EXCLUDED.label, 
+                    valence=EXCLUDED.valence, arousal=EXCLUDED.arousal, 
+                    dominant_emotion=EXCLUDED.dominant_emotion,
                     last_updated=NOW()
             """
             psycopg2.extras.execute_values(cur, query, batch_data)
+        
         conn.commit()
-        log(f"[CORTEX] 🗺️  Success! Mapped {len(batch_data)} nodes in {time.time() - start_time:.2f}s")
+        log(f"[CORTEX] 🗺️ Success! Mapped {len(batch_data)} nodes with Soul Data.")
+        
     except Exception as e:
         log(f"[CORTEX] ❌ Upload Failed: {e}")
     finally:
