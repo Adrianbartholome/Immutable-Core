@@ -9,6 +9,7 @@ import sys
 import requests
 import time
 import threading
+import cortex
 from datetime import datetime
 from google import genai
 from google.genai import types
@@ -17,7 +18,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional, List, Set
-from cortex import regenerate_neural_map
 
 # --- APP INITIALIZATION ---
 app = FastAPI(title="Aether Titan Core (Platinum V5.7 - Titan Shield)")
@@ -1515,7 +1515,7 @@ def recalculate_map(payload: dict):
     # START THE THREAD
     # Note: We are now passing 'update_system_status' as the 5th arg!
     thread = threading.Thread(
-        target=regenerate_neural_map, 
+        target=cortex.regenerate_neural_map, 
         args=(db_string, spacing, cluster_strength, scale, update_system_status)
     )
     thread.start()
@@ -1559,6 +1559,26 @@ def get_pulse():
     finally:
         if conn:
             conn.close()
+
+@app.post("/cortex/regenerate")
+async def trigger_cortex_regeneration(background_tasks: BackgroundTasks):
+    """
+    Endpoint to manually trigger the Prism Cartographer.
+    Uses BackgroundTasks so the UI doesn't freeze while Python does the math.
+    """
+    print("🧠 [API] Triggering Cortex Regeneration...")
+    
+    # We use a background task so the button returns "Success" instantly,
+    # while the server keeps crunching the numbers in the background.
+    background_tasks.add_task(
+        cortex.regenerate_neural_map, 
+        db_connection_string=os.getenv("DATABASE_URL"),
+        spacing=1.0, 
+        cluster_strength=1.0, 
+        scale=1000.0
+    )
+    
+    return {"status": "SUCCESS", "message": "Regeneration Started"}
 
 @app.post("/admin/sync")
 def sync_holograms(payload: dict = None):
