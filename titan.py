@@ -1339,10 +1339,17 @@ def get_neural_map():
     conn = db.connect()
     try:
         with conn.cursor() as cur:
+            # Idempotent Schema Migration (Must run before SELECT)
+            cur.execute("""
+                ALTER TABLE cortex_map ADD COLUMN IF NOT EXISTS valence FLOAT;
+                ALTER TABLE cortex_map ADD COLUMN IF NOT EXISTS arousal FLOAT;
+                ALTER TABLE cortex_map ADD COLUMN IF NOT EXISTS dominant_emotion TEXT;
+            """)
+            
             # 1. Select the Prism Data
             cur.execute("""
-                SELECT hologram_id, x, y, z, r, g, b, size, label, 
-                       valence, arousal, dominant_emotion 
+                SELECT hologram_id, x, y, z, r, g, b, size, label,
+                       valence, arousal, dominant_emotion
                 FROM cortex_map
             """)
             data = cur.fetchall()
