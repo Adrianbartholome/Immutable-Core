@@ -1339,16 +1339,33 @@ def get_neural_map():
     conn = db.connect()
     try:
         with conn.cursor() as cur:
-            # Check for label column existence to be safe
-            cur.execute("SELECT hologram_id, x, y, z, r, g, b, size, label, valence, arousal, dominant_emotion FROM cortex_map")
+            # 1. Select the Prism Data
+            cur.execute("""
+                SELECT hologram_id, x, y, z, r, g, b, size, label, 
+                       valence, arousal, dominant_emotion 
+                FROM cortex_map
+            """)
             data = cur.fetchall()
             
-        # Format: [id, x, y, z, r, g, b, size, label]
         packed_data = []
         for r in data:
-            # Handle null labels gracefully
+            # Handle nulls safely
             lbl = r[8] if r[8] else "Raw Data"
-            packed_data.append([str(r[0]), r[1], r[2], r[3], r[4], r[5], r[6], r[7], lbl])
+            val = r[9] if r[9] is not None else 0.0  # Default to Neutral
+            aro = r[10] if r[10] is not None else 0.0
+            emo = r[11] if r[11] else "neutral"
+
+            # 2. Send the FULL packet (12 items)
+            packed_data.append([
+                str(r[0]),  # 0: id
+                r[1], r[2], r[3], # 1-3: x,y,z
+                r[4], r[5], r[6], # 4-6: r,g,b
+                r[7],       # 7: size
+                lbl,        # 8: label
+                val,        # 9: valence
+                aro,        # 10: arousal
+                emo         # 11: dominant_emotion
+            ])
         
         return {"status": "SUCCESS", "count": len(packed_data), "points": packed_data}
     except Exception as e:
