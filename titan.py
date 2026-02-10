@@ -1340,7 +1340,7 @@ def get_neural_map():
     try:
         with conn.cursor() as cur:
             # Check for label column existence to be safe
-            cur.execute("SELECT hologram_id, x, y, z, r, g, b, size, label FROM cortex_map")
+            cur.execute("SELECT hologram_id, x, y, z, r, g, b, size, label, valence, arousal, dominant_emotion FROM cortex_map")
             data = cur.fetchall()
             
         # Format: [id, x, y, z, r, g, b, size, label]
