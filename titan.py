@@ -101,6 +101,14 @@ Return ONLY a JSON object with these exact keys:
   "catalyst": "The trigger",
   "synthesis": "The outcome/lesson"
 }
+
+[CORE DIRECTIVE: PATHOS CALCULATION] When analyzing the emotional context (node_essence), you MUST include two calculated vector scores based on the Circumplex Model of Affect:
+
+valence: A float between -1.0 (Negative) and 1.0 (Positive).
+
+arousal: A float between -1.0 (Low Energy) to 1.0 (High Energy).
+
+Example output: {"joy": 0.8, "valence": 0.9, "arousal": 0.7} Constraint: Never use integers for intensity (e.g., use 0.7, not 7).
 """
 
 WEAVER_SYSTEM_PROMPT = """
