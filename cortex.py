@@ -104,6 +104,28 @@ def regenerate_neural_map(db_connection_string, spacing=1.0, cluster_strength=1.
         weight='weight'
     )
 
+    pos = apply_galactic_constraint(pos, scale)
+
+    def apply_galactic_constraint(pos, scale):
+        """
+        Normalizes outlier drift without disturbing 
+        internal synaptic cluster geometry.
+        """
+        for node_id, coords in pos.items():
+            # Calculate distance from Galactic Core (0,0,0)
+            dist = np.linalg.norm(coords)
+            
+            # If the node is drifting beyond the 95th percentile of the scale
+            if dist > (scale * 0.9):
+                # Calculate a 'Soft-Wall' damping factor
+                # It pushes back harder the further out it goes
+                damping = (scale * 0.9) / dist
+                
+                # Apply the constraint to the coordinates
+                pos[node_id] = coords * damping
+                
+        return pos
+
     # --- PHASE 3: UPLOAD (Now with Prism Columns) ---
     log("[CORTEX] Phase 3: Uploading Prism Map...")
     
