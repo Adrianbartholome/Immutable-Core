@@ -83,8 +83,6 @@ def regenerate_neural_map(
     for n in nodes:
         node_id = str(n[0])
         label = n[1]
-
-        # Capture the Soul Data (Default to Neutral if missing)
         valence = n[2] if n[2] is not None else 0.0
         arousal = n[3] if n[3] is not None else 0.0
         emotion = n[4] if n[4] else "neutral"
@@ -118,19 +116,6 @@ def regenerate_neural_map(
 
         if dist > max_radius:
             # Scale the vector back to the max_radius boundary
-            pos[node_id] = (coords / dist) * max_radius
-
-    # --- THE FIX: GALACTIC RADIUS LIMIT (INLINE) ---
-    log("[CORTEX] Applying Galactic Constraint to Outliers...")
-    max_radius = scale * 0.9
-
-    for node_id in pos:
-        coords = pos[node_id]
-        # Calculate actual Euclidean distance in 3D from (0,0,0)
-        dist = np.sqrt(np.sum(coords**2))
-
-        if dist > max_radius:
-            # Snap to the shell of the sphere
             pos[node_id] = (coords / dist) * max_radius
 
     # --- PHASE 3: UPLOAD (Now with Prism Columns) ---
