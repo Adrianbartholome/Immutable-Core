@@ -104,7 +104,18 @@ def regenerate_neural_map(db_connection_string, spacing=1.0, cluster_strength=1.
         weight='weight'
     )
 
-    pos = apply_galactic_constraint(pos, scale)
+    # --- THE FIX: GALACTIC RADIUS LIMIT ---
+    log("[CORTEX] Applying Galactic Constraint to Outliers...")
+    max_radius = scale * 0.9  # Tether them to 90% of total scale
+    
+    for node_id in pos:
+        coords = pos[node_id]
+        # Calculate actual Euclidean distance in 3D
+        dist = np.sqrt(np.sum(coords**2))
+        
+        if dist > max_radius:
+            # Scale the vector back to the max_radius boundary
+            pos[node_id] = (coords / dist) * max_radius
 
     def apply_galactic_constraint(pos, scale):
         """
@@ -125,6 +136,8 @@ def regenerate_neural_map(db_connection_string, spacing=1.0, cluster_strength=1.
                 pos[node_id] = coords * damping
                 
         return pos
+
+    pos = apply_galactic_constraint(pos, scale)
 
     # --- PHASE 3: UPLOAD (Now with Prism Columns) ---
     log("[CORTEX] Phase 3: Uploading Prism Map...")
