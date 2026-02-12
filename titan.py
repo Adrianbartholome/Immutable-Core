@@ -165,42 +165,40 @@ def update_system_status(msg):
     CURRENT_SYSTEM_STATUS = msg
 
 def generate_with_fallback(client, contents, system_prompt=None, config=None):
-    if not client:
+    # 1. AUTH CHECK: Grab the key fresh from the environment
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
         return None
 
-    # --- THE HARDENED CONFIG RECONSTRUCTION ---
-    # 1. Create a base config
-    # 2. Layer in any passed parameters (temperature, response_mime_type, etc.)
-    # 3. Force-inject the system_instruction as a proper Parts object
-    
+    # 2. CONFIG RECONSTRUCTION (Version 3 logic)
     if isinstance(config, types.GenerateContentConfig):
-        # Extract existing params if a config object was passed
         actual_config = config
     elif isinstance(config, dict):
         actual_config = types.GenerateContentConfig(**config)
     else:
         actual_config = types.GenerateContentConfig()
 
-    # --- THE AUTH-HEADER TRIGGER ---
-    # If a raw string is passed, we must wrap it. This is the 400 fix.
+    # 3. PATCH SYSTEM PROMPT
     if system_prompt and isinstance(system_prompt, str):
         actual_config.system_instruction = types.Content(
             parts=[types.Part(text=system_prompt)]
         )
 
-    # TITAN SHIELD: Select viable nodes
+    # 4. TITAN SHIELD
     viable_cascade = [m for m in MODEL_CASCADE if SHIELD.is_viable(m)]
-    
     if not viable_cascade:
-        log_error("🆘 TITAN SHIELD: ALL NEURAL PATHS LOCKED.")
-        raise Exception("No viable models available.")
+        raise Exception("Titan Shield: All paths locked.")
 
+    # 5. EXECUTION LOOP
     for model_name in viable_cascade:
         try:
             log(f"TRANSMITTING TO NODE: {model_name}...")
             
-            # Use the reconstructed actual_config
-            response = client.models.generate_content(
+            # RE-AUTHENTICATE PER CALL:
+            # We bypass the global client's state to ensure the key is passed.
+            current_client = genai.Client(api_key=api_key)
+            
+            response = current_client.models.generate_content(
                 model=model_name, 
                 contents=contents, 
                 config=actual_config
@@ -209,7 +207,7 @@ def generate_with_fallback(client, contents, system_prompt=None, config=None):
 
         except Exception as e:
             err_str = str(e).upper()
-            log_error(f"DEBUG: Node {model_name} collision: {e}")
+            log_error(f"Collision on {model_name}: {e}")
             
             if any(code in err_str for code in ["429", "RESOURCE_EXHAUSTED"]):
                 SHIELD.mark_exhausted(model_name)
@@ -218,7 +216,7 @@ def generate_with_fallback(client, contents, system_prompt=None, config=None):
                 SHIELD.mark_temporary_fail(model_name)
                 continue
             else:
-                # This is where the 400 error is likely being raised
+                # This is where the 400 'API Key Not Found' is being caught
                 raise e
 
 
