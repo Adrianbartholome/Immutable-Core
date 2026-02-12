@@ -165,12 +165,13 @@ def update_system_status(msg):
     CURRENT_SYSTEM_STATUS = msg
 
 def generate_with_fallback(client, contents, system_prompt=None, config=None):
-    # 1. AUTH CHECK: Grab the key fresh from the environment
+    # 1. Grab the key fresh from the OS environment
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
+        log_error("CRITICAL: GEMINI_API_KEY not found in environment.")
         return None
 
-    # 2. CONFIG RECONSTRUCTION (Version 3 logic)
+    # 2. Rebuild the config to ensure no "helpful" ghosts are hiding in it
     if isinstance(config, types.GenerateContentConfig):
         actual_config = config
     elif isinstance(config, dict):
@@ -178,27 +179,27 @@ def generate_with_fallback(client, contents, system_prompt=None, config=None):
     else:
         actual_config = types.GenerateContentConfig()
 
-    # 3. PATCH SYSTEM PROMPT
+    # 3. Force the system prompt into the required SDK object format
     if system_prompt and isinstance(system_prompt, str):
         actual_config.system_instruction = types.Content(
             parts=[types.Part(text=system_prompt)]
         )
 
-    # 4. TITAN SHIELD
+    # 4. Filter for viable models
     viable_cascade = [m for m in MODEL_CASCADE if SHIELD.is_viable(m)]
     if not viable_cascade:
-        raise Exception("Titan Shield: All paths locked.")
+        raise Exception("Titan Shield: All signal paths are locked.")
 
-    # 5. EXECUTION LOOP
+    # 5. The Transmission Loop
     for model_name in viable_cascade:
         try:
             log(f"TRANSMITTING TO NODE: {model_name}...")
             
-            # RE-AUTHENTICATE PER CALL:
-            # We bypass the global client's state to ensure the key is passed.
-            current_client = genai.Client(api_key=api_key)
+            # Use a fresh client for this specific thread/call
+            # This bypasses any corrupted global client state
+            fresh_client = genai.Client(api_key=api_key)
             
-            response = current_client.models.generate_content(
+            response = fresh_client.models.generate_content(
                 model=model_name, 
                 contents=contents, 
                 config=actual_config
@@ -207,8 +208,9 @@ def generate_with_fallback(client, contents, system_prompt=None, config=None):
 
         except Exception as e:
             err_str = str(e).upper()
-            log_error(f"Collision on {model_name}: {e}")
+            log_error(f"Signal Collision on {model_name}: {e}")
             
+            # Handle Quota/Timeout but raise the 400s
             if any(code in err_str for code in ["429", "RESOURCE_EXHAUSTED"]):
                 SHIELD.mark_exhausted(model_name)
                 continue
@@ -216,7 +218,7 @@ def generate_with_fallback(client, contents, system_prompt=None, config=None):
                 SHIELD.mark_temporary_fail(model_name)
                 continue
             else:
-                # This is where the 400 'API Key Not Found' is being caught
+                # If we still hit 400 here, it's a structural logic error
                 raise e
 
 
@@ -342,11 +344,12 @@ class DBManager:
             if conn:
                 conn.close()
 
-    def commit_lithograph(
-        self, previous_hash, raw_text, client, token_cache, manual_score=None
-    ):
+    def commit_lithograph(self, previous_hash, raw_text, client, token_cache, manual_score=None):
+        log(f"DEBUG: Attempting Supabase connect with string: {self.connection_string[:20]}...") # Only log the start for security
         conn = None
         try:
+            conn = self.connect()
+            log("DEBUG: Supabase Connection Successful.")
             compressed = encode_memory(raw_text, token_cache)
             score = 5
 
