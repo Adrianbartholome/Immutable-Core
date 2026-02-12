@@ -168,58 +168,52 @@ def generate_with_fallback(client, contents, system_prompt=None, config=None):
     if not client:
         return None
 
-    # Initialize config
+    # --- THE DEFENSIVE CONFIG INITIALIZATION ---
     if config is None:
-        config = types.GenerateContentConfig()
+        actual_config = types.GenerateContentConfig()
     elif isinstance(config, dict):
-        config = types.GenerateContentConfig(**config)
+        actual_config = types.GenerateContentConfig(**config)
+    else:
+        # Use the provided types.GenerateContentConfig object directly
+        actual_config = config
 
-    # Apply system instruction if provided
+    # --- THE AUTH-SYNC PATCH ---
+    # We force the system_prompt into the exact object structure 
+    # the Google backend currently demands for authenticated headers.
     if system_prompt and isinstance(system_prompt, str):
-        config.system_instruction = types.Content(
+        actual_config.system_instruction = types.Content(
             parts=[types.Part(text=system_prompt)]
         )
 
-    # Filter for viable models based on Shield status
     viable_cascade = [m for m in MODEL_CASCADE if SHIELD.is_viable(m)]
-
+    
     if not viable_cascade:
-        log_error("🆘 CRITICAL: ALL MODELS EXHAUSTED OR LOCKED.")
-        # If specific 429 lock, allow user to reset via UI logic
-        raise Exception("Titan Shield Report: All models unavailable.")
-
-    last_error = None
+        log_error("🆘 TITAN SHIELD: ALL PATHS BLOCKED.")
+        raise Exception("No viable models available.")
 
     for model_name in viable_cascade:
         try:
             log(f"TRANSMITTING TO NODE: {model_name}...")
-
+            
+            # Use actual_config to preserve the wrapped system instruction
             response = client.models.generate_content(
-                model=model_name, contents=contents, config=config
+                model=model_name, 
+                contents=contents, 
+                config=actual_config
             )
             return response
 
         except Exception as e:
             err_str = str(e).upper()
-
-            # HARD LOCK: Daily Limit
             if any(code in err_str for code in ["429", "RESOURCE_EXHAUSTED"]):
                 SHIELD.mark_exhausted(model_name)
-                last_error = e
                 continue
-
-            # SOFT SHUNT: Temporary issues
             elif any(code in err_str for code in ["503", "500", "TIMEOUT"]):
                 SHIELD.mark_temporary_fail(model_name)
-                last_error = e
                 continue
-
             else:
-                # Logic errors shouldn't trigger fallback
                 log_error(f"STATIONARY ERROR on {model_name}: {e}")
                 raise e
-
-    raise last_error
 
 
 # --- UTILITIES ---
