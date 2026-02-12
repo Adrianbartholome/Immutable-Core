@@ -1157,7 +1157,8 @@ def get_graph_data():
 
 @app.get("/cortex/map")
 def get_neural_map():
-    # ... connection ...
+    db = DBManager()
+    conn = db.connect()
     with conn.cursor() as cur:
         # Safety check
         cur.execute("ALTER TABLE cortex_map ADD COLUMN IF NOT EXISTS ethos TEXT;")
