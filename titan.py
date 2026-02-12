@@ -1609,7 +1609,7 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
                 litho_res = db_manager.commit_lithograph(
                     previous_hash=db_manager.get_latest_hash(),
                     raw_text=save_target,
-                    client=None,
+                    client=GEMINI_CLIENT,
                     token_cache=TOKEN_DICTIONARY_CACHE,
                     manual_score=ai_score
                 )
