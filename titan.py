@@ -1159,36 +1159,52 @@ def get_graph_data():
 def get_neural_map():
     db = DBManager()
     conn = db.connect()
-    with conn.cursor() as cur:
-        # Safety check
-        cur.execute("ALTER TABLE cortex_map ADD COLUMN IF NOT EXISTS ethos TEXT;")
-        cur.execute("ALTER TABLE cortex_map ADD COLUMN IF NOT EXISTS mythos TEXT;")
+    try:
+        with conn.cursor() as cur:
+            # 1. Safety Check: Ensure columns exist
+            cur.execute("ALTER TABLE cortex_map ADD COLUMN IF NOT EXISTS ethos TEXT;")
+            cur.execute("ALTER TABLE cortex_map ADD COLUMN IF NOT EXISTS mythos TEXT;")
+            
+            # 2. Select Data (Indices 0-13)
+            cur.execute("""
+                SELECT hologram_id, x, y, z, r, g, b, size, label,
+                       valence, arousal, dominant_emotion, 
+                       ethos, mythos
+                FROM cortex_map
+            """)
+            data = cur.fetchall()
+
+        # 3. Pack Data for Frontend
+        packed_data = []
+        for r in data:
+            # Handle nulls safely
+            lbl = r[8] if r[8] else "Raw Data"
+            val = r[9] if r[9] is not None else 0.0
+            aro = r[10] if r[10] is not None else 0.0
+            emo = r[11] if r[11] else "neutral"
+            eth = r[12] if r[12] else ""        # Ethos
+            mth = r[13] if r[13] else "Unknown" # Mythos
+
+            packed_data.append([
+                str(r[0]),      # 0: id
+                r[1], r[2], r[3], # 1-3: x,y,z
+                r[4], r[5], r[6], # 4-6: r,g,b
+                r[7],           # 7: size
+                lbl,            # 8: label
+                val,            # 9: valence
+                aro,            # 10: arousal
+                emo,            # 11: emotion
+                eth,            # 12: ethos
+                mth             # 13: mythos
+            ])
         
-        # Select new columns
-        cur.execute("""
-            SELECT hologram_id, x, y, z, r, g, b, size, label,
-                   valence, arousal, dominant_emotion, 
-                   ethos, mythos -- [NEW]
-            FROM cortex_map
-        """)
-        data = cur.fetchall()
+        # 4. THE CRITICAL RETURN STATEMENT
+        return {"status": "SUCCESS", "count": len(packed_data), "points": packed_data}
 
-    packed_data = []
-    for r in data:
-        packed_data.append([
-            str(r[0]),      # 0
-            r[1], r[2], r[3], # 1-3
-            r[4], r[5], r[6], # 4-6
-            r[7],           # 7
-            r[8],           # 8
-            r[9],           # 9
-            r[10],          # 10
-            r[11],          # 11
-            r[12],          # 12: ethos [NEW]
-            r[13]           # 13: mythos [NEW]
-        ])
-
-# --- SESSION ANCHOR ENDPOINTS ---
+    except Exception as e:
+        return {"status": "FAILURE", "error": str(e)}
+    finally:
+        conn.close()
 
 @app.post("/admin/anchor")
 async def create_session_anchor(request: Request):
