@@ -175,8 +175,10 @@ def generate_with_fallback(client, contents, system_prompt=None, config=None):
         config = types.GenerateContentConfig(**config)
 
     # Apply system instruction if provided
-    if system_prompt:
-        config.system_instruction = system_prompt
+    if system_prompt and isinstance(system_prompt, str):
+        config.system_instruction = types.Content(
+            parts=[types.Part(text=system_prompt)]
+        )
 
     # Filter for viable models based on Shield status
     viable_cascade = [m for m in MODEL_CASCADE if SHIELD.is_viable(m)]
