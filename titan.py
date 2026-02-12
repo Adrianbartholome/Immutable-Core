@@ -911,9 +911,10 @@ def create_manual_lithograph(text, score=5):
 
 # Change default litho_id from 0 to None to prevent FK Constraint errors
 def process_hologram_sync(content_to_save: str, litho_id: int = None, gate_threshold: int = 5, override_score=None):
+    global GEMINI_CLIENT
     
     # Handle the case where 0 might be passed explicitly
-    if litho_id == 0: 
+    if litho_id == 0:
         litho_id = None
 
     log(f"Starting SYNC Refraction for Litho ID: {litho_id if litho_id else 'Manual'}")
@@ -927,9 +928,19 @@ def process_hologram_sync(content_to_save: str, litho_id: int = None, gate_thres
         final_score = 5 
     
     try:
-        # Check client availability
+        # Check client availability & Re-init if needed (Thread Safety)
         if not GEMINI_CLIENT:
-            log("⚠️ Gemini Client missing. Running Preservation Protocol.")
+            log("⚠️ Gemini Client missing in sync task. Attempting recovery...")
+            k = os.environ.get("GEMINI_API_KEY")
+            if k:
+                try:
+                    GEMINI_CLIENT = genai.Client(api_key=k)
+                    log("✅ Gemini Client Recovered.")
+                except:
+                    log_error("❌ Recovery Failed.")
+            
+        if not GEMINI_CLIENT:
+            log("⚠️ Gemini Client still missing. Running Preservation Protocol.")
             refraction = None
         else:
             db = DBManager()
