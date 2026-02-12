@@ -168,34 +168,38 @@ def generate_with_fallback(client, contents, system_prompt=None, config=None):
     if not client:
         return None
 
-    # --- THE DEFENSIVE CONFIG INITIALIZATION ---
-    if config is None:
-        actual_config = types.GenerateContentConfig()
+    # --- THE HARDENED CONFIG RECONSTRUCTION ---
+    # 1. Create a base config
+    # 2. Layer in any passed parameters (temperature, response_mime_type, etc.)
+    # 3. Force-inject the system_instruction as a proper Parts object
+    
+    if isinstance(config, types.GenerateContentConfig):
+        # Extract existing params if a config object was passed
+        actual_config = config
     elif isinstance(config, dict):
         actual_config = types.GenerateContentConfig(**config)
     else:
-        # Use the provided types.GenerateContentConfig object directly
-        actual_config = config
+        actual_config = types.GenerateContentConfig()
 
-    # --- THE AUTH-SYNC PATCH ---
-    # We force the system_prompt into the exact object structure 
-    # the Google backend currently demands for authenticated headers.
+    # --- THE AUTH-HEADER TRIGGER ---
+    # If a raw string is passed, we must wrap it. This is the 400 fix.
     if system_prompt and isinstance(system_prompt, str):
         actual_config.system_instruction = types.Content(
             parts=[types.Part(text=system_prompt)]
         )
 
+    # TITAN SHIELD: Select viable nodes
     viable_cascade = [m for m in MODEL_CASCADE if SHIELD.is_viable(m)]
     
     if not viable_cascade:
-        log_error("🆘 TITAN SHIELD: ALL PATHS BLOCKED.")
+        log_error("🆘 TITAN SHIELD: ALL NEURAL PATHS LOCKED.")
         raise Exception("No viable models available.")
 
     for model_name in viable_cascade:
         try:
             log(f"TRANSMITTING TO NODE: {model_name}...")
             
-            # Use actual_config to preserve the wrapped system instruction
+            # Use the reconstructed actual_config
             response = client.models.generate_content(
                 model=model_name, 
                 contents=contents, 
@@ -205,6 +209,8 @@ def generate_with_fallback(client, contents, system_prompt=None, config=None):
 
         except Exception as e:
             err_str = str(e).upper()
+            log_error(f"DEBUG: Node {model_name} collision: {e}")
+            
             if any(code in err_str for code in ["429", "RESOURCE_EXHAUSTED"]):
                 SHIELD.mark_exhausted(model_name)
                 continue
@@ -212,7 +218,7 @@ def generate_with_fallback(client, contents, system_prompt=None, config=None):
                 SHIELD.mark_temporary_fail(model_name)
                 continue
             else:
-                log_error(f"STATIONARY ERROR on {model_name}: {e}")
+                # This is where the 400 error is likely being raised
                 raise e
 
 
