@@ -218,7 +218,9 @@ def generate_with_fallback(client, contents, system_prompt=None, config=None):
                 SHIELD.mark_temporary_fail(model_name)
                 continue
             else:
-                # If we still hit 400 here, it's a structural logic error
+                # If we still hit 400 here, it might be a transient auth issue
+                if "API KEY" in err_str or "INVALID_ARGUMENT" in err_str:
+                    log_error(f"🚨 AUTH SIGNAL FRAGMENTED: {e}")
                 raise e
 
 
