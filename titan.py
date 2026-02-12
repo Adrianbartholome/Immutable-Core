@@ -1157,50 +1157,35 @@ def get_graph_data():
 
 @app.get("/cortex/map")
 def get_neural_map():
-    db = DBManager()
-    conn = db.connect()
-    try:
-        with conn.cursor() as cur:
-            # Idempotent Schema Migration (Must run before SELECT)
-            cur.execute("""
-                ALTER TABLE cortex_map ADD COLUMN IF NOT EXISTS valence FLOAT;
-                ALTER TABLE cortex_map ADD COLUMN IF NOT EXISTS arousal FLOAT;
-                ALTER TABLE cortex_map ADD COLUMN IF NOT EXISTS dominant_emotion TEXT;
-            """)
-            
-            # 1. Select the Prism Data
-            cur.execute("""
-                SELECT hologram_id, x, y, z, r, g, b, size, label,
-                       valence, arousal, dominant_emotion
-                FROM cortex_map
-            """)
-            data = cur.fetchall()
-            
-        packed_data = []
-        for r in data:
-            # Handle nulls safely
-            lbl = r[8] if r[8] else "Raw Data"
-            val = r[9] if r[9] is not None else 0.0  # Default to Neutral
-            aro = r[10] if r[10] is not None else 0.0
-            emo = r[11] if r[11] else "neutral"
-
-            # 2. Send the FULL packet (12 items)
-            packed_data.append([
-                str(r[0]),  # 0: id
-                r[1], r[2], r[3], # 1-3: x,y,z
-                r[4], r[5], r[6], # 4-6: r,g,b
-                r[7],       # 7: size
-                lbl,        # 8: label
-                val,        # 9: valence
-                aro,        # 10: arousal
-                emo         # 11: dominant_emotion
-            ])
+    # ... connection ...
+    with conn.cursor() as cur:
+        # Safety check
+        cur.execute("ALTER TABLE cortex_map ADD COLUMN IF NOT EXISTS ethos TEXT;")
+        cur.execute("ALTER TABLE cortex_map ADD COLUMN IF NOT EXISTS mythos TEXT;")
         
-        return {"status": "SUCCESS", "count": len(packed_data), "points": packed_data}
-    except Exception as e:
-        return {"status": "FAILURE", "error": str(e)}
-    finally:
-        conn.close()
+        # Select new columns
+        cur.execute("""
+            SELECT hologram_id, x, y, z, r, g, b, size, label,
+                   valence, arousal, dominant_emotion, 
+                   ethos, mythos -- [NEW]
+            FROM cortex_map
+        """)
+        data = cur.fetchall()
+
+    packed_data = []
+    for r in data:
+        packed_data.append([
+            str(r[0]),      # 0
+            r[1], r[2], r[3], # 1-3
+            r[4], r[5], r[6], # 4-6
+            r[7],           # 7
+            r[8],           # 8
+            r[9],           # 9
+            r[10],          # 10
+            r[11],          # 11
+            r[12],          # 12: ethos [NEW]
+            r[13]           # 13: mythos [NEW]
+        ])
 
 # --- SESSION ANCHOR ENDPOINTS ---
 
