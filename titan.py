@@ -28,6 +28,14 @@ origins = [
     "https://exitse7en.com",          # Non-www version for safety
 ]
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,            # MUST match the list above
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 # --- LOGGING UTILS ---
 def log(message):
