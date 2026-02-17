@@ -191,6 +191,17 @@ CORTEX_LATEST_LOG = "Ready."
 # --- 1. GLOBAL STATUS VARIABLE (The Whiteboard) ---
 CURRENT_SYSTEM_STATUS = "System Ready."
 
+# --- TUNING ---
+CHUNK_SIZE = 2000
+CHUNK_OVERLAP = 400
+def chunkText(text, size, overlap):
+    chunks = []
+    i = 0
+    while i < len(text):
+        chunks.append(text[i:i + size])
+        i += (size - overlap)
+    return chunks
+
 def update_system_status(msg):
     """Updates the global variable so the /cortex/status endpoint sees it."""
     global CURRENT_SYSTEM_STATUS
@@ -1655,9 +1666,7 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
             elif triggered_cmd == "[COMMIT_MEMORY]":
                 save_target = f"{frontend_context} User: {memory_text} AI: {clean_reply}"
             elif triggered_cmd == "[COMMIT_FILE]":
-                # RESTORE: Full sharding engine for raw Scout data/Files
-                from __main__ import chunkText, CHUNK_SIZE, CHUNK_OVERLAP # Ensure these are accessible
-                
+
                 # 1. Shard the input text
                 chunks = chunkText(memory_text, CHUNK_SIZE, CHUNK_OVERLAP)
                 
