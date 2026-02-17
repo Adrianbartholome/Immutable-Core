@@ -22,13 +22,11 @@ from typing import Optional, List, Set
 # --- APP INITIALIZATION ---
 app = FastAPI(title="Aether Titan Core (Platinum V5.7 - Titan Shield)")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+origins = [
+    "http://localhost:5173",          # Your local Vite dev server
+    "https://www.exitse7en.com",      # Your main production domain
+    "https://exitse7en.com",          # Non-www version for safety
+]
 
 
 # --- LOGGING UTILS ---
