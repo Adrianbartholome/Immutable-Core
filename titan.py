@@ -1655,9 +1655,30 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
             elif triggered_cmd == "[COMMIT_MEMORY]":
                 save_target = f"{frontend_context} User: {memory_text} AI: {clean_reply}"
             elif triggered_cmd == "[COMMIT_FILE]":
-                # If it's a file, we want to prioritize the user's input data 
-                # but potentially strip any system triggers if they were included.
-                save_target = memory_text 
+                # RESTORE: Full sharding engine for raw Scout data/Files
+                from __main__ import chunkText, CHUNK_SIZE, CHUNK_OVERLAP # Ensure these are accessible
+                
+                # 1. Shard the input text
+                chunks = chunkText(memory_text, CHUNK_SIZE, CHUNK_OVERLAP)
+                
+                # 2. Iterate and Burn each shard
+                for i, chunk in enumerate(chunks):
+                    chunk_with_header = f"[FILE_SHARD: {i+1}/{len(chunks)}] {chunk}"
+                    litho_res = db_manager.commit_lithograph(
+                        previous_hash=db_manager.get_latest_hash(), 
+                        raw_text=chunk_with_header, 
+                        client=GEMINI_CLIENT, 
+                        token_cache=db_manager.load_token_cache(), 
+                        manual_score=ai_score
+                    )
+                    if litho_res.get('status') == 'SUCCESS':
+                        background_tasks.add_task(
+                            process_hologram_sync, 
+                            chunk_with_header, 
+                            litho_res.get("litho_id"), 
+                            5, 
+                            ai_score
+                        )
 
             # Auto-Commit Log
             try:
