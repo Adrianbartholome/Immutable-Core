@@ -1609,15 +1609,12 @@ def sync_holograms(payload: dict = None):
 async def unified_titan_endpoint(request: Request, background_tasks: BackgroundTasks):
     global TOKEN_DICTIONARY_CACHE
     db_manager = DBManager()
-
-    # 1. Load Token Cache
     if not TOKEN_DICTIONARY_CACHE:
         try:
             TOKEN_DICTIONARY_CACHE = db_manager.load_token_cache()
         except:
             TOKEN_DICTIONARY_CACHE = {}
 
-    # 2. Parse Request
     try:
         data = await request.json()
     except Exception:
@@ -1627,7 +1624,6 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
     memory_text = data.get("memory_text", "")
     override_score = data.get("override_score")
 
-    # --- SYSTEM ACTIONS ---
     if action == "retrieve":
         if not data.get("query"):
             return {"error": "No query"}
@@ -1647,19 +1643,17 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
         return db_manager.restore_range(data.get("target_id"), data.get("range_end"))
     elif action == "rehash":
         return db_manager.rehash_chain(data.get("note"))
-
-    # --- MANUAL COMMIT (BUTTON) ---
     elif action == "commit":
         if not memory_text:
             return {"status": "FAILURE", "error": "No data to anchor."}
         try:
             prev_hash = db_manager.get_latest_hash()
             litho_res = db_manager.commit_lithograph(
-                previous_hash=prev_hash,
-                raw_text=memory_text,
-                client=GEMINI_CLIENT,
-                token_cache=TOKEN_DICTIONARY_CACHE,
-                manual_score=override_score,
+                prev_hash,
+                memory_text,
+                GEMINI_CLIENT,
+                TOKEN_DICTIONARY_CACHE,
+                override_score,
             )
             if litho_res.get("status") == "SUCCESS":
                 background_tasks.add_task(
@@ -1676,10 +1670,8 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
                 }
             return litho_res
         except Exception as e:
-            log_error(f"Manual Commit Failure: {e}")
             return {"status": "FAILURE", "error": str(e)}
 
-    # --- CHAT ACTIONS ---
     elif action == "chat":
         if not memory_text:
             return {"ai_text": "System Online.", "status": "HEARTBEAT"}
@@ -1702,35 +1694,25 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
                     else ai_reply
                 )
             except Exception as e:
-                log_error(f"Speech Failure: {e}")
                 ai_reply = f"Error: {str(e)}"
 
-        # 3. TRIGGER SCANNING
         triggers = ["[COMMIT_SUMMARY]", "[COMMIT_MEMORY]", "[COMMIT_FILE]"]
         triggered_cmd = next((t for t in triggers if t in ai_reply), None)
         score_match = re.search(r"\[SCORE:\s*(\d+)\]", ai_reply)
         ai_score = int(score_match.group(1)) if score_match else 5
 
-        # --- BRANCH A: FILE COMMIT (The Roo Handshake) ---
+        # --- THE RESTORED BOSTROM-SUCCESS BLOCK ---
         if triggered_cmd == "[COMMIT_FILE]":
-            filename = f"Chat_Commit_{int(time.time())}.txt"
-            clean_data = ""
-
-            # Robust extraction of Roo's [FILE_CONTENT]
-            handshake_match = re.search(
+            # Working Regex
+            file_content_match = re.search(
                 r"\[FILE_CONTENT:\s*(.*?)\]\s*[\r\n]+(.*)", memory_text, re.DOTALL
             )
-            if handshake_match:
-                filename = handshake_match.group(1).strip()
-                clean_data = handshake_match.group(2).strip()
-                # Clean headers
-                clean_data = (
-                    clean_data.replace("[Artifact Processed]:", "")
-                    .replace("Chat_Commit:", "")
-                    .replace("FILE CONTENT:", "")
-                    .strip()
-                )
+
+            if file_content_match:
+                filename = file_content_match.group(1).strip()
+                clean_data = file_content_match.group(2).strip()
             else:
+                filename = "Chat_Commit.txt"
                 clean_data = memory_text.replace("[COMMIT_FILE]", "").strip()
 
             if clean_data:
@@ -1755,7 +1737,6 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
                             ai_score,
                         )
 
-                # Master Redundancy
                 master_payload = f"[MASTER FILE ARCHIVE]: {filename} {clean_data}"
                 db_manager.commit_lithograph(
                     db_manager.get_latest_hash(),
@@ -1765,9 +1746,10 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
                     ai_score,
                 )
 
+                # Emergency exit to stop duplicates
                 return {"ai_text": ai_reply}
 
-        # --- BRANCH B: AUTO-LOG (Standard Chat / Summary / Memory) ---
+        # Auto-Log for everything else
         save_target = memory_text
         if triggered_cmd == "[COMMIT_SUMMARY]":
             save_target = ai_reply.replace("[COMMIT_SUMMARY]", "").strip()
