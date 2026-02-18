@@ -1604,10 +1604,12 @@ def sync_holograms(payload: dict = None):
     # 3. IDLE State (If both lists were empty)
     return {"status": "SUCCESS", "queued_count": 0, "synapse_count": 0, "mode": "IDLE"}
 
+
 @app.post("/")
 async def unified_titan_endpoint(request: Request, background_tasks: BackgroundTasks):
     global TOKEN_DICTIONARY_CACHE
     db_manager = DBManager()
+
     if not TOKEN_DICTIONARY_CACHE:
         try:
             TOKEN_DICTIONARY_CACHE = db_manager.load_token_cache()
@@ -1619,16 +1621,20 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
     except Exception:
         return {"status": "FAILURE", "error": "Invalid JSON payload"}
 
-    action = data.get('action', 'chat')
-    memory_text = data.get('memory_text', '')
-    override_score = data.get('override_score')
+    action = data.get("action", "chat")
+    memory_text = data.get("memory_text", "")
+    override_score = data.get("override_score")
 
     if action == "retrieve":
-        if not data.get("query"): return {"error": "No query"}
-        results = db_manager.search_lithograph(data.get("query"), TOKEN_DICTIONARY_CACHE)
+        if not data.get("query"):
+            return {"error": "No query"}
+        results = db_manager.search_lithograph(
+            data.get("query"), TOKEN_DICTIONARY_CACHE
+        )
         return {"status": "SUCCESS", "results": results}
     elif action == "scrape":
-        if not data.get("url"): return {"error": "URL required"}
+        if not data.get("url"):
+            return {"error": "URL required"}
         return db_manager.scrape_web(data.get("url"))
     elif action == "delete":
         return db_manager.delete_lithograph(data.get("target_id"))
@@ -1638,28 +1644,56 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
         return db_manager.restore_range(data.get("target_id"), data.get("range_end"))
     elif action == "rehash":
         return db_manager.rehash_chain(data.get("note"))
-    elif action == 'commit':
-        if not memory_text: return {"status": "FAILURE", "error": "No data to anchor."}
+    elif action == "commit":
+        if not memory_text:
+            return {"status": "FAILURE", "error": "No data to anchor."}
         try:
             prev_hash = db_manager.get_latest_hash()
-            litho_res = db_manager.commit_lithograph(prev_hash, memory_text, GEMINI_CLIENT, TOKEN_DICTIONARY_CACHE, override_score)
-            if litho_res.get('status') == 'SUCCESS':
-                background_tasks.add_task(process_hologram_sync, memory_text, litho_res.get("litho_id"), 5, override_score)
-                return {"status": "SUCCESS", "message": "Signal Anchored.", "litho_id": litho_res.get("litho_id")}
+            litho_res = db_manager.commit_lithograph(
+                prev_hash,
+                memory_text,
+                GEMINI_CLIENT,
+                TOKEN_DICTIONARY_CACHE,
+                override_score,
+            )
+            if litho_res.get("status") == "SUCCESS":
+                background_tasks.add_task(
+                    process_hologram_sync,
+                    memory_text,
+                    litho_res.get("litho_id"),
+                    5,
+                    override_score,
+                )
+                return {
+                    "status": "SUCCESS",
+                    "message": "Signal Anchored.",
+                    "litho_id": litho_res.get("litho_id"),
+                }
             return litho_res
         except Exception as e:
             return {"status": "FAILURE", "error": str(e)}
 
-    elif action == 'chat':
-        if not memory_text: return {"ai_text": "System Online.", "status": "HEARTBEAT"}
-        frontend_context = data.get('history', '')
-        full_prompt = f"{TITAN_SYSTEM_PROMPT}\n[CONTEXT]\n{frontend_context}\nUser: {memory_text}"
+    elif action == "chat":
+        if not memory_text:
+            return {"ai_text": "System Online.", "status": "HEARTBEAT"}
+        frontend_context = data.get("history", "")
+        full_prompt = (
+            f"{TITAN_SYSTEM_PROMPT}\n[CONTEXT]\n{frontend_context}\nUser: {memory_text}"
+        )
 
         ai_reply = "Signal interrupted."
         if GEMINI_CLIENT:
             try:
-                response = generate_with_fallback(GEMINI_CLIENT, contents=[full_prompt], config=types.GenerateContentConfig(temperature=0.7))
-                ai_reply = response.text if response and hasattr(response, 'text') else ai_reply
+                response = generate_with_fallback(
+                    GEMINI_CLIENT,
+                    contents=[full_prompt],
+                    config=types.GenerateContentConfig(temperature=0.7),
+                )
+                ai_reply = (
+                    response.text
+                    if response and hasattr(response, "text")
+                    else ai_reply
+                )
             except Exception as e:
                 ai_reply = f"Error: {str(e)}"
 
@@ -1668,33 +1702,69 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
         score_match = re.search(r"\[SCORE:\s*(\d+)\]", ai_reply)
         ai_score = int(score_match.group(1)) if score_match else 5
 
-        # --- THE RESTORED BOSTROM-SUCCESS BLOCK ---
+        # --- THE CORRECTED [COMMIT_FILE] BLOCK ---
         if triggered_cmd == "[COMMIT_FILE]":
-            # Working Regex
-            file_content_match = re.search(r"\[FILE_CONTENT:\s*(.*?)\]\s*[\r\n]+(.*)", memory_text, re.DOTALL)
-            
-            if file_content_match:
-                filename = file_content_match.group(1).strip()
-                clean_data = file_content_match.group(2).strip()
+            # 1. Initialize variables (The Crash Fix)
+            filename = f"Chat_Commit_{int(time.time())}.txt"
+            clean_data = ""
+
+            # 2. Greedy Regex (The "Actually Different" Fix)
+            # Captures content regardless of leading text, newlines, or spaces.
+            handshake_match = re.search(
+                r"\[FILE_CONTENT:\s*(.*?)\]\s*[\r\n]+(.*)", memory_text, re.DOTALL
+            )
+
+            if handshake_match:
+                filename = handshake_match.group(1).strip()
+                clean_data = handshake_match.group(2).strip()
+                # Purity Cleaning
+                clean_data = (
+                    clean_data.replace("[Artifact Processed]:", "")
+                    .replace("Chat_Commit:", "")
+                    .replace("FILE CONTENT:", "")
+                    .strip()
+                )
             else:
-                filename = "Chat_Commit.txt"
+                # Fallback for direct pasted text
                 clean_data = memory_text.replace("[COMMIT_FILE]", "").strip()
 
             if clean_data:
+                # 3. Sharding Loop
                 chunks = chunkText(clean_data, CHUNK_SIZE, CHUNK_OVERLAP)
                 for i, chunk in enumerate(chunks):
-                    official_header = f"[FILE: {filename} | PART {i+1}/{len(chunks)}] {chunk}"
-                    litho_res = db_manager.commit_lithograph(db_manager.get_latest_hash(), official_header, GEMINI_CLIENT, TOKEN_DICTIONARY_CACHE, ai_score)
-                    if litho_res.get('status') == 'SUCCESS':
-                        background_tasks.add_task(process_hologram_sync, official_header, litho_res.get("litho_id"), 5, ai_score)
-                
+                    official_header = (
+                        f"[FILE: {filename} | PART {i+1}/{len(chunks)}] {chunk}"
+                    )
+                    litho_res = db_manager.commit_lithograph(
+                        db_manager.get_latest_hash(),
+                        official_header,
+                        GEMINI_CLIENT,
+                        TOKEN_DICTIONARY_CACHE,
+                        ai_score,
+                    )
+                    if litho_res.get("status") == "SUCCESS":
+                        background_tasks.add_task(
+                            process_hologram_sync,
+                            official_header,
+                            litho_res.get("litho_id"),
+                            5,
+                            ai_score,
+                        )
+
+                # 4. Master Archive (Redundancy)
                 master_payload = f"[MASTER FILE ARCHIVE]: {filename} {clean_data}"
-                db_manager.commit_lithograph(db_manager.get_latest_hash(), master_payload, GEMINI_CLIENT, TOKEN_DICTIONARY_CACHE, ai_score)
-                
-                # Emergency exit to stop duplicates
+                db_manager.commit_lithograph(
+                    db_manager.get_latest_hash(),
+                    master_payload,
+                    GEMINI_CLIENT,
+                    TOKEN_DICTIONARY_CACHE,
+                    ai_score,
+                )
+
+                # 5. Success Exit (The Duplicate Fix)
                 return {"ai_text": ai_reply}
 
-        # Auto-Log for everything else
+        # --- AUTO-LOG ---
         save_target = memory_text
         if triggered_cmd == "[COMMIT_SUMMARY]":
             save_target = ai_reply.replace("[COMMIT_SUMMARY]", "").strip()
@@ -1702,15 +1772,28 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
             save_target = f"{frontend_context}\nUser: {memory_text}\nAI: {ai_reply}"
 
         try:
-            litho_res = db_manager.commit_lithograph(db_manager.get_latest_hash(), save_target, GEMINI_CLIENT, TOKEN_DICTIONARY_CACHE, ai_score)
-            if litho_res.get('status') == 'SUCCESS':
-                background_tasks.add_task(process_hologram_sync, save_target, litho_res.get("litho_id"), 5, ai_score)
+            litho_res = db_manager.commit_lithograph(
+                db_manager.get_latest_hash(),
+                save_target,
+                GEMINI_CLIENT,
+                TOKEN_DICTIONARY_CACHE,
+                ai_score,
+            )
+            if litho_res.get("status") == "SUCCESS":
+                background_tasks.add_task(
+                    process_hologram_sync,
+                    save_target,
+                    litho_res.get("litho_id"),
+                    5,
+                    ai_score,
+                )
         except Exception as e:
             log_error(f"Auto-Commit Fail: {e}")
 
         return {"ai_text": ai_reply}
 
     return {"status": "FAILURE", "error": f"Unknown Action: {action}"}
+
 
 # Cache init
 TOKEN_DICTIONARY_CACHE = {}
