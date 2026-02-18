@@ -1666,30 +1666,49 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
             elif triggered_cmd == "[COMMIT_MEMORY]":
                 save_target = f"{frontend_context} User: {memory_text} AI: {clean_reply}"
             elif triggered_cmd == "[COMMIT_FILE]":
-                # 1. Identify the data. 
-                # If the user pasted a huge block after the tag, 'memory_text' contains it.
-                # We strip the command phrase to get the raw data for the shards.
-                clean_data = memory_text.replace(triggered_cmd, "").strip()
+                # 1. Identify the data.
+                # Look for [FILE_CONTENT: filename] marker injected by frontend
+                file_match = re.search(r"\[FILE_CONTENT:\s*(.*?)\]\n([\s\S]*)", memory_text)
+                
+                if file_match:
+                    filename = file_match.group(1).strip()
+                    clean_data = file_match.group(2).strip()
+                else:
+                    # Fallback to old behavior if marker isn't found
+                    filename = "Unknown Artifact"
+                    clean_data = memory_text.replace(triggered_cmd, "").strip()
                 
                 if not clean_data:
                     log("⚠️ No data found to shard for [COMMIT_FILE].")
                 else:
                     # 2. Shard the ACTUAL data
                     chunks = chunkText(clean_data, CHUNK_SIZE, CHUNK_OVERLAP)
-                    log(f"🔥 TITAN IS BURNING {len(chunks)} SHARDS TO CORE...")
+                    log(f"🔥 TITAN IS BURNING {len(chunks)} SHARDS TO CORE FOR: {filename}...")
                     
                     for i, chunk in enumerate(chunks):
-                        chunk_with_header = f"[FILE_SHARD: {i+1}/{len(chunks)}] {chunk}"
+                        chunk_with_header = f"[FILE: {filename} | PART {i+1}/{len(chunks)}] {chunk}"
                         # This call uses SNEGO-P scoring automatically because client is passed
                         litho_res = db_manager.commit_lithograph(
                             previous_hash=db_manager.get_latest_hash(),
                             raw_text=chunk_with_header,
-                            client=GEMINI_CLIENT, 
+                            client=GEMINI_CLIENT,
                             token_cache=db_manager.load_token_cache(),
                             manual_score=ai_score # Use the score Titan just decided!
                         )
                         if litho_res.get('status') == 'SUCCESS':
                             background_tasks.add_task(process_hologram_sync, chunk_with_header, litho_res.get("litho_id"), 5, ai_score)
+                    
+                    # 3. Store Master Copy (Mirrors manual button behavior)
+                    master_payload = f"[MASTER FILE ARCHIVE]: {filename}\n\n{clean_data}"
+                    master_res = db_manager.commit_lithograph(
+                        previous_hash=db_manager.get_latest_hash(),
+                        raw_text=master_payload,
+                        client=GEMINI_CLIENT,
+                        token_cache=db_manager.load_token_cache(),
+                        manual_score=ai_score
+                    )
+                    if master_res.get('status') == 'SUCCESS':
+                        background_tasks.add_task(process_hologram_sync, master_payload, master_res.get("litho_id"), 5, ai_score)
 
             # Auto-Commit Log
             try:
