@@ -1666,19 +1666,21 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
             elif triggered_cmd == "[COMMIT_MEMORY]":
                 save_target = f"{frontend_context} User: {memory_text} AI: {clean_reply}"
             elif triggered_cmd == "[COMMIT_FILE]":
-                # 1. Parse Roo's handshake: [FILE_CONTENT: filename]\ncontent
-                handshake_match = re.search(r"\[FILE_CONTENT: (.*?)\]\n(.*)", memory_text, re.DOTALL)
+                # THE CRITICAL CHANGE: added \s* around the tags and newlines
+                # This captures the content regardless of how many \n Roo sends.
+                handshake_match = re.search(r"\[FILE_CONTENT:\s*(.*?)\]\s*[\r\n]+(.*)", memory_text, re.DOTALL)
                 
                 if handshake_match:
                     filename = handshake_match.group(1).strip()
                     clean_data = handshake_match.group(2).strip()
+                    log(f"📂 SHAKING HANDS WITH ROO: {filename}")
                 else:
-                    # Fallback for pasted text (no physical file)
+                    # Fallback for pasted text
                     filename = f"Chat_Commit_{int(time.time())}.txt"
                     clean_data = memory_text.replace(triggered_cmd, "").strip()
 
                 if clean_data:
-                    # 2. Shard the clean data
+                    # The sharding logic below remains the same, but 'clean_data' is now actually CLEAN.
                     chunks = chunkText(clean_data, CHUNK_SIZE, CHUNK_OVERLAP)
                     log(f"🔥 TITAN IS BURNING {len(chunks)} SHARDS FOR: {filename}")
                     
