@@ -1767,7 +1767,7 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
                 else:
                     # Fallback for pasted text
                     filename = f"Chat_Commit_{int(time.time())}.txt"
-                    clean_data = memory_text.replace(triggered_cmd, "").strip()
+                    clean_data = clean_data.replace("[Artifact Processed]:", "").replace("Chat_Commit:", "").replace("FILE CONTENT:", "").strip()
 
                 if clean_data:
                     # The sharding logic below remains the same, but 'clean_data' is now actually CLEAN.
@@ -1827,9 +1827,9 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
                                 ai_score,
                             )
 
-                    return {
-                        "ai_text": ai_reply
-                    }  # Exit immediately to prevent the duplicate!
+                        return {
+                            "ai_text": ai_reply
+                        }  # Exit immediately to prevent the duplicate!
 
             # Auto-Commit Log
             try:
