@@ -1740,118 +1740,52 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
         score_match = re.search(r"\[SCORE:\s*(\d+)\]", ai_reply)
         ai_score = int(score_match.group(1)) if score_match else None
 
-        if triggered_cmd:
-            clean_reply = ai_reply.replace(triggered_cmd, "").strip()
-            if score_match:
-                clean_reply = clean_reply.replace(score_match.group(0), "").strip()
+        elif triggered_cmd == "[COMMIT_FILE]":
+            # 1. INITIALIZE VARIABLES (Fixes the UnboundLocalError)
+            filename = f"Chat_Commit_{int(time.time())}.txt"
+            clean_data = ""
 
-            # Dynamic Content Selection
-            save_target = memory_text  # Default
-            if triggered_cmd == "[COMMIT_SUMMARY]":
-                save_target = clean_reply
-            elif triggered_cmd == "[COMMIT_MEMORY]":
-                save_target = (
-                    f"{frontend_context} User: {memory_text} AI: {clean_reply}"
-                )
-            elif triggered_cmd == "[COMMIT_FILE]":
-                # THE CRITICAL CHANGE: added \s* around the tags and newlines
-                # This captures the content regardless of how many \n Roo sends.
-                handshake_match = re.search(
-                    r"\[FILE_CONTENT:\s*(.*?)\]\s*[\r\n]+(.*)", memory_text, re.DOTALL
-                )
+            # 2. EXTRACT DATA
+            handshake_match = re.search(r"\[FILE_CONTENT:\s*(.*?)\]\s*[\r\n]+(.*)", memory_text, re.DOTALL)
+            
+            if handshake_match:
+                filename = handshake_match.group(1).strip()
+                clean_data = handshake_match.group(2).strip()
+                # Purity cleaning
+                clean_data = clean_data.replace("[Artifact Processed]:", "").replace("Chat_Commit:", "").replace("FILE CONTENT:", "").strip()
+                log(f"📂 ROBUST EXTRACTION SUCCESS: {filename}")
+            else:
+                # Fallback for pasted text
+                clean_data = memory_text.replace(triggered_cmd, "").strip()
 
-                if handshake_match:
-                    filename = handshake_match.group(1).strip()
-                    clean_data = handshake_match.group(2).strip()
-                    log(f"📂 SHAKING HANDS WITH ROO: {filename}")
-                else:
-                    # Fallback for pasted text
-                    filename = f"Chat_Commit_{int(time.time())}.txt"
-                    clean_data = clean_data.replace("[Artifact Processed]:", "").replace("Chat_Commit:", "").replace("FILE CONTENT:", "").strip()
-
-                if clean_data:
-                    # The sharding logic below remains the same, but 'clean_data' is now actually CLEAN.
-                    chunks = chunkText(clean_data, CHUNK_SIZE, CHUNK_OVERLAP)
-                    log(f"🔥 TITAN IS BURNING {len(chunks)} SHARDS FOR: {filename}")
-
-                    for i, chunk in enumerate(chunks):
-                        # USE YOUR OFFICIAL SHARD FORMAT
-                        official_header = (
-                            f"[FILE: {filename} | PART {i+1}/{len(chunks)}] {chunk}"
-                        )
-
-                        litho_res = db_manager.commit_lithograph(
-                            previous_hash=db_manager.get_latest_hash(),
-                            raw_text=official_header,
-                            client=GEMINI_CLIENT,
-                            token_cache=db_manager.load_token_cache(),
-                            manual_score=ai_score,
-                        )
-                        if litho_res.get("status") == "SUCCESS":
-                            background_tasks.add_task(
-                                process_hologram_sync,
-                                official_header,
-                                litho_res.get("litho_id"),
-                                5,
-                                ai_score,
-                            )
-
-                    # 3. Commit the OFFICIAL MASTER ARCHIVE (Redundancy)
-                    master_payload = f"[MASTER FILE ARCHIVE]: {filename} {clean_data}"
-                    db_manager.commit_lithograph(
+            # 3. SHARD AND BURN
+            if clean_data:
+                chunks = chunkText(clean_data, CHUNK_SIZE, CHUNK_OVERLAP)
+                log(f"🔥 TITAN IS BURNING {len(chunks)} SHARDS FOR: {filename}")
+                
+                for i, chunk in enumerate(chunks):
+                    official_header = f"[FILE: {filename} | PART {i+1}/{len(chunks)}] {chunk}"
+                    litho_res = db_manager.commit_lithograph(
                         previous_hash=db_manager.get_latest_hash(),
-                        raw_text=master_payload,
-                        client=GEMINI_CLIENT,
+                        raw_text=official_header,
+                        client=GEMINI_CLIENT, 
                         token_cache=db_manager.load_token_cache(),
-                        manual_score=ai_score,
+                        manual_score=ai_score 
                     )
-                    for i, chunk in enumerate(chunks):
-                        # USE YOUR OFFICIAL SHARD FORMAT
-                        official_header = (
-                            f"[FILE: {filename} | PART {i+1}/{len(chunks)}] {chunk}"
-                        )
+                    if litho_res.get('status') == 'SUCCESS':
+                        background_tasks.add_task(process_hologram_sync, official_header, litho_res.get("litho_id"), 5, ai_score)
 
-                        litho_res = db_manager.commit_lithograph(
-                            previous_hash=db_manager.get_latest_hash(),
-                            raw_text=official_header,
-                            client=GEMINI_CLIENT,
-                            token_cache=db_manager.load_token_cache(),
-                            manual_score=ai_score,
-                        )
-                        if litho_res.get("status") == "SUCCESS":
-                            background_tasks.add_task(
-                                process_hologram_sync,
-                                official_header,
-                                litho_res.get("litho_id"),
-                                5,
-                                ai_score,
-                            )
-
-                        return {
-                            "ai_text": ai_reply
-                        }  # Exit immediately to prevent the duplicate!
-
-            # Auto-Commit Log
-            try:
-                litho_res = db_manager.commit_lithograph(
+                # 4. MASTER ARCHIVE (Redundancy)
+                master_payload = f"[MASTER FILE ARCHIVE]: {filename} {clean_data}"
+                db_manager.commit_lithograph(
                     previous_hash=db_manager.get_latest_hash(),
-                    raw_text=save_target,
+                    raw_text=master_payload,
                     client=GEMINI_CLIENT,
-                    token_cache=TOKEN_DICTIONARY_CACHE,
-                    manual_score=ai_score,
+                    token_cache=db_manager.load_token_cache(),
+                    manual_score=ai_score
                 )
-                if litho_res.get("status") == "SUCCESS":
-                    background_tasks.add_task(
-                        process_hologram_sync,
-                        save_target,
-                        litho_res.get("litho_id"),
-                        5,
-                        ai_score,
-                    )
-            except Exception as e:
-                log_error(f"Auto-Commit Exception: {e}")
-
-        return {"ai_text": ai_reply}
+                
+                return {"ai_text": ai_reply}
 
     return {"status": "FAILURE", "error": f"Unknown Action: {action}"}
 
