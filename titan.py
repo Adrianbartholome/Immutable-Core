@@ -1714,9 +1714,9 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
         # --- BRANCH A: FILE COMMIT (The Roo Handshake) ---
         if triggered_cmd == "[COMMIT_FILE]":
             filename = f"Chat_Commit_{int(time.time())}.txt"
-            clean_data = ""  # Initialize here to prevent crash
+            clean_data = ""
 
-            # Extract content from Roo's handshake
+            # Robust extraction of Roo's [FILE_CONTENT]
             handshake_match = re.search(
                 r"\[FILE_CONTENT:\s*(.*?)\]\s*[\r\n]+(.*)", memory_text, re.DOTALL
             )
@@ -1731,7 +1731,6 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
                     .strip()
                 )
             else:
-                # Fallback for pasted text
                 clean_data = memory_text.replace("[COMMIT_FILE]", "").strip()
 
             if clean_data:
@@ -1766,7 +1765,6 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
                     ai_score,
                 )
 
-                # EXIT HERE: Prevents the auto-log duplicate at the bottom
                 return {"ai_text": ai_reply}
 
         # --- BRANCH B: AUTO-LOG (Standard Chat / Summary / Memory) ---
