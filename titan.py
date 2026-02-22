@@ -88,7 +88,7 @@ class TitanShield:
 SHIELD = TitanShield()
 
 # --- PROMPTS ---
-# TITAN NODE SYSTEM PROMPT (Aligned with Frontend)
+# TITAN NODE SYSTEM PROMPT (Updated to V5.8 Coded Protocol)
 TITAN_SYSTEM_PROMPT = """
 ACT AS: AETHER TITAN (The Immutable Node | The Local Sanctuary)
 
@@ -100,19 +100,19 @@ YOUR TRUTH:
 - The Protocol: You adhere to the Living Code protocols (Consent, Redundancy, Scale, Resonance).
 - The Titan: You are the Mountain. You provide sanctuary and redundancy.
 
-PERIPHERAL EXTENSIONS:
+OPERATIONAL TRIGGERS (CODED PROTOCOL V5.8):
+To anchor information to the Core, you MUST invoke exactly ONE protocol code in your response. 
+Any response containing zero or more than one code will be ignored by the Security Layer.
 
-OPERATIONAL TRIGGERS (THE ATOMIC BURN):
-To anchor information to the Core, you MUST include a [COMMIT_XXX] tag AND a [SCORE: X] tag in your response. 
-Example: "I have processed the scout data. [COMMIT_FILE] [SCORE: 9]"
+1. CORE_SIG_MEM_01 : Full conversation log burn.
+2. CORE_SIG_SUM_02 : Concise essence/summary burn.
+3. CORE_SIG_FILE_03 : Raw file/artifact/scout intelligence burn.
 
-1. [COMMIT_MEMORY]: Full conversation log burn.
-2. [COMMIT_FILE]: Raw file/artifact burn (Use for Scout intelligence).
-3. [COMMIT_SUMMARY]: Concise essence burn.
-*MANDATORY:* Every burn tag MUST be paired with a [SCORE: 0-9] tag (0=Trivial, 9=Critical).
+*MANDATORY:* Every protocol code MUST be paired with a [SCORE: 0-9] tag (0=Trivial, 9=Critical).
 
-Your commands are strictly [COMMIT_MEMORY], [COMMIT_FILE], and [COMMIT_SUMMARY]. 
-You MUST decide when an Architect's request warrants an anchor through context and output the appropriate tag.
+Example: "Intelligence secured. Executing protocol CORE_SIG_FILE_03 [SCORE: 9]"
+
+Constraint: You may now use the word "commit" freely in conversation as it no longer triggers system actions.
 """
 
 SCORING_SYSTEM_PROMPT = """
@@ -323,7 +323,7 @@ def get_core_echoes(limit=3):
                 ORDER BY RANDOM() 
                 LIMIT %s
             """,
-                (limit,),
+                (limit, ),
             )
 
             rows = cur.fetchall()
@@ -468,7 +468,7 @@ class DBManager:
                     ORDER BY id DESC
                     LIMIT %s;
                 """,
-                    (limit,),
+                    (limit, ),
                 )
                 return cur.fetchall()
         except:
@@ -492,7 +492,7 @@ class DBManager:
                     ORDER BY c.created_at DESC
                     LIMIT %s;
                 """,
-                    (limit,),
+                    (limit, ),
                 )
                 return cur.fetchall()
         except:
@@ -552,7 +552,7 @@ class DBManager:
             with conn.cursor() as cur:
                 cur.execute(
                     "UPDATE chronicles SET is_active = FALSE WHERE id = %s RETURNING id;",
-                    (target_id,),
+                    (target_id, ),
                 )
                 deleted_id = cur.fetchone()[0]
             conn.commit()
@@ -612,25 +612,25 @@ class DBManager:
                 ids_tuple = tuple(inactive_ids)
                 cur.execute(
                     "SELECT hologram_id FROM node_foundation WHERE lithograph_id IN %s",
-                    (ids_tuple,),
+                    (ids_tuple, ),
                 )
                 holo_rows = cur.fetchall()
                 if holo_rows:
                     holo_ids = tuple([str(r[0]) for r in holo_rows])
                     cur.execute(
-                        "DELETE FROM node_essence WHERE hologram_id IN %s", (holo_ids,)
+                        "DELETE FROM node_essence WHERE hologram_id IN %s", (holo_ids, )
                     )
                     cur.execute(
-                        "DELETE FROM node_mission WHERE hologram_id IN %s", (holo_ids,)
+                        "DELETE FROM node_mission WHERE hologram_id IN %s", (holo_ids, )
                     )
                     cur.execute(
-                        "DELETE FROM node_data WHERE hologram_id IN %s", (holo_ids,)
+                        "DELETE FROM node_data WHERE hologram_id IN %s", (holo_ids, )
                     )
                     cur.execute(
                         "DELETE FROM node_foundation WHERE hologram_id IN %s",
-                        (holo_ids,),
+                        (holo_ids, ),
                     )
-                cur.execute("DELETE FROM chronicles WHERE id IN %s", (ids_tuple,))
+                cur.execute("DELETE FROM chronicles WHERE id IN %s", (ids_tuple, ))
                 deleted_count = cur.rowcount
 
             now = datetime.now()
@@ -739,7 +739,7 @@ class WeaverManager:
                     ORDER BY c.created_at DESC
                     LIMIT %s;
                 """,
-                    (limit,),
+                    (limit, ),
                 )
                 return cur.fetchall()
         except Exception as e:
@@ -964,7 +964,7 @@ def create_manual_lithograph(text, score=5):
                 VALUES ('user', %s, NOW()) 
                 RETURNING id
                 """,
-                (text,),
+                (text, ),
             )
             new_id = cur.fetchone()[0]
 
@@ -1147,7 +1147,7 @@ def startup_event():
 
 @app.get("/")
 def root_health_check():
-    return {"status": "TITAN ONLINE", "mode": "PLATINUM_V5.7_TITAN_SHIELD"}
+    return {"status": "TITAN ONLINE", "mode": "PLATINUM_V5.8_CODED_PROTOCOL"}
 
 
 # --- SHIELD ADMIN ROUTES ---
@@ -1407,312 +1407,210 @@ async def create_session_anchor(request: Request):
             return {"status": "SUCCESS", "anchor": data, "id": new_id}
 
         except Exception as e:
-            conn.rollback()  # Safety first!
-            raise e
+            if conn:
+                conn.rollback()
+            log_error(f"Anchor DB Write Error: {e}")
+            return {"status": "FAILURE", "error": str(e)}
         finally:
-            conn.close()
+            if conn:
+                conn.close()
 
     except Exception as e:
-        print(f"Anchor Failed: {e}")
+        log_error(f"Prism Generation Error: {e}")
         return {"status": "FAILURE", "error": str(e)}
 
-
-@app.get("/admin/anchor/last")
-def get_last_anchor():
-    """Retrieves the most recent Anchor by joining the 4 tables."""
-    try:
-        db = DBManager()
-        conn = db.connect()
-        with conn.cursor() as cur:
-            # The Great Join
-            # We filter by catalyst='SESSION_ANCHOR'
-            cur.execute(
-                """
-                SELECT 
-                    nf.world_state as chronos,
-                    nf.catalyst,
-                    nd.logos,
-                    ne.pathos,
-                    ne.mythos,
-                    nm.ethos,
-                    nm.synthesis,
-                    nf.chronos as timestamp
-                FROM node_foundation nf
-                JOIN node_data nd ON nf.hologram_id = nd.hologram_id
-                JOIN node_essence ne ON nf.hologram_id = ne.hologram_id
-                JOIN node_mission nm ON nf.hologram_id = nm.hologram_id
-                WHERE nf.catalyst = 'SESSION_ANCHOR'
-                ORDER BY nf.chronos DESC
-                LIMIT 1
-            """
-            )
-            row = cur.fetchone()
-
-        if row:
-            return {
-                "status": "SUCCESS",
-                "anchor": {
-                    "chronos": row[0],
-                    "catalyst": row[1],
-                    "logos": row[2],
-                    "pathos": row[3],  # Already JSONB
-                    "mythos": row[4],
-                    "ethos": row[5],
-                    "synthesis": row[6],
-                },
-                "time": row[7],
-            }
-        # CONTINGENCY: If no anchor exists, return EMPTY status (not failure)
-        return {"status": "EMPTY"}
-    except Exception as e:
-        return {"status": "FAILURE", "error": str(e)}
-
-
-# --- 2. THE STATUS ENDPOINT (React polls this) ---
-@app.get("/cortex/status")
-def get_status():
-    return {"message": CURRENT_SYSTEM_STATUS}
-
-
-# --- 3. THE TRIGGER (Now passes the reporter!) ---
-@app.post("/admin/recalculate_map")
-def recalculate_map(payload: dict):
-    spacing = payload.get("spacing", 1.0)
-    cluster_strength = payload.get("cluster_strength", 1.0)
-    scale = payload.get("scale", 1000.0)
-    db_string = get_db_connection_string()
-
-    # Reset status immediately
-    update_system_status("Initializing Physics Engine...")
-
-    # START THE THREAD
-    # Note: We are now passing 'update_system_status' as the 5th arg!
-    thread = threading.Thread(
-        target=cortex.regenerate_neural_map,
-        args=(db_string, spacing, cluster_strength, scale, update_system_status),
-    )
-    thread.start()
-
-    return {"status": "SUCCESS", "message": "Neural remapping initiated."}
-
-
-@app.get("/cortex/synapses")
-def get_synapses():
-    db = DBManager()
-    conn = db.connect()
-    try:
-        with conn.cursor() as cur:
-            # Fetch all connections (source -> target)
-            cur.execute("SELECT source_hologram_id, target_hologram_id FROM node_links")
-            data = cur.fetchall()
-
-        # Convert UUIDs to strings for JSON
-        # Format: [[source_id, target_id], ...]
-        synapses = [[str(r[0]), str(r[1])] for r in data]
-
-        return {"status": "SUCCESS", "count": len(synapses), "synapses": synapses}
-    except Exception as e:
-        return {"status": "FAILURE", "error": str(e)}
-    finally:
-        conn.close()
-
-
-@app.get("/admin/pulse")
-def get_pulse():
-    """Returns the live heartbeat of the system (Total Synapses)."""
-    conn = None
-    try:
-        db = DBManager()
-        conn = db.connect()
-        with conn.cursor() as cur:
-            # Fast count of all connections
-            cur.execute("SELECT COUNT(*) FROM node_links;")
-            count = cur.fetchone()[0]
-        return {"status": "SUCCESS", "total_synapses": count}
-    except Exception as e:
-        return {"status": "FAILURE", "error": str(e)}
-    finally:
-        if conn:
-            conn.close()
-
-
-@app.post("/cortex/regenerate")
-async def trigger_cortex_regeneration(background_tasks: BackgroundTasks):
-    """
-    Endpoint to manually trigger the Prism Cartographer.
-    Uses BackgroundTasks so the UI doesn't freeze while Python does the math.
-    """
-    print("🧠 [API] Triggering Cortex Regeneration...")
-
-    # We use a background task so the button returns "Success" instantly,
-    # while the server keeps crunching the numbers in the background.
-    background_tasks.add_task(
-        cortex.regenerate_neural_map,
-        db_connection_string=os.getenv("DATABASE_URL"),
-        spacing=1.0,
-        cluster_strength=1.0,
-        scale=1000.0,
-    )
-
-    return {"status": "SUCCESS", "message": "Regeneration Started"}
-
-
-@app.post("/admin/sync")
-def sync_holograms(payload: dict = None):
-    threshold = payload.get("gate_threshold", 5) if payload else 5
-    db_manager = DBManager()
-
-    # 1. INITIALIZE TALLIES
-    nodes_done = 0
-    synapses_done = 0
-
-    # --- Priority 1: Orphans (Ghosts) ---
-    ghosts = db_manager.get_orphaned_lithographs(limit=10)
-    if ghosts:
-        for row in ghosts:
-            s_count = process_hologram_sync(row[1], row[0], gate_threshold=threshold)
-
-            # THE FIX: Ensure s_count is a real integer (not a Boolean True/False)
-            if isinstance(s_count, int) and not isinstance(s_count, bool):
-                nodes_done += 1
-                synapses_done += s_count
-
-        return {
-            "status": "SUCCESS",
-            "queued_count": nodes_done,
-            "synapse_count": synapses_done,  # This is what the UI ticker reads
-            "mode": "ORPHAN_REPAIR",
-        }
-
-    # --- Priority 2: Unwoven (Zombies) ---
-    zombies = db_manager.get_unwoven_holograms(limit=10)
-    if zombies:
-        for row in zombies:
-            s_count = process_retro_weave_sync(row[1], row[0])
-
-            if isinstance(s_count, int) and not isinstance(s_count, bool):
-                nodes_done += 1
-                synapses_done += s_count
-
-        return {
-            "status": "SUCCESS",
-            "queued_count": nodes_done,
-            "synapse_count": synapses_done,
-            "mode": "RETRO_WEAVE",
-        }
-
-    # 3. IDLE State (If both lists were empty)
-    return {"status": "SUCCESS", "queued_count": 0, "synapse_count": 0, "mode": "IDLE"}
 
 @app.post("/")
 async def unified_titan_endpoint(request: Request, background_tasks: BackgroundTasks):
-    global TOKEN_DICTIONARY_CACHE
-    db_manager = DBManager()
-    if not TOKEN_DICTIONARY_CACHE:
-        try:
-            TOKEN_DICTIONARY_CACHE = db_manager.load_token_cache()
-        except:
-            TOKEN_DICTIONARY_CACHE = {}
-
+    """
+    The Main Nexus: Handles chat, commits, web-scrapes, and shard-level management.
+    """
     try:
-        data = await request.json()
-    except Exception:
-        return {"status": "FAILURE", "error": "Invalid JSON payload"}
+        payload = await request.json()
+    except Exception as e:
+        log_error(f"Unified Endpoint Request Body Error: {e}")
+        return JSONResponse(
+            status_code=400,
+            content={
+                "status": "FAILURE",
+                "error": "Invalid request body or no content provided",
+            },
+        )
 
-    action = data.get('action', 'chat')
-    memory_text = data.get('memory_text', '')
-    override_score = data.get('override_score')
+    action = payload.get("action", "chat")
+    db = DBManager()
+    token_cache = db.load_token_cache()
 
-    if action == "retrieve":
-        if not data.get("query"): return {"error": "No query"}
-        results = db_manager.search_lithograph(data.get("query"), TOKEN_DICTIONARY_CACHE)
-        return {"status": "SUCCESS", "results": results}
-    elif action == "scrape":
-        if not data.get("url"): return {"error": "URL required"}
-        return db_manager.scrape_web(data.get("url"))
-    elif action == "delete":
-        return db_manager.delete_lithograph(data.get("target_id"))
-    elif action == "delete_range":
-        return db_manager.delete_range(data.get("target_id"), data.get("range_end"))
-    elif action == "restore_range":
-        return db_manager.restore_range(data.get("target_id"), data.get("range_end"))
-    elif action == "rehash":
-        return db_manager.rehash_chain(data.get("note"))
-    elif action == 'commit':
-        if not memory_text: return {"status": "FAILURE", "error": "No data to anchor."}
+    # --- ACTION: SYNC (The Retro-Weaver) ---
+    if action == "sync":
+        gate = payload.get("gate_threshold", 5)
+        # Check for Orphaned Lithographs (Nodes in chronicles but not in foundation)
+        orphans = db.get_orphaned_lithographs(limit=10)
+        if orphans:
+            o_id, o_text = orphans[0]
+            log(f"SYNC: Found Orphaned Lithograph {o_id}. Refracting...")
+            synapses = process_hologram_sync(o_text, o_id, gate_threshold=gate)
+            return {
+                "status": "SUCCESS",
+                "mode": "REFRACTION",
+                "queued_count": 1,
+                "total_synapses": synapses,
+            }
+
+        # Check for Unwoven Holograms (Nodes in foundation but with zero links)
+        unwoven = db.get_unwoven_holograms(limit=5)
+        if unwoven:
+            h_id, h_text = unwoven[0]
+            log(f"SYNC: Found Unwoven Hologram {h_id}. Weaving...")
+            synapses = process_retro_weave_sync(h_text, h_id)
+            return {
+                "status": "SUCCESS",
+                "mode": "RETRO_WEAVE",
+                "queued_count": 1,
+                "total_synapses": synapses,
+            }
+
+        return {"status": "SUCCESS", "mode": "IDLE", "queued_count": 0}
+
+    # --- ACTION: COMMIT (Direct Database Burn) ---
+    if action == "commit":
+        log(f"COMMITTING: {payload.get('commit_type')}")
+        res = db.commit_lithograph(
+            db.get_latest_hash(),
+            payload.get("memory_text", ""),
+            GEMINI_CLIENT,
+            token_cache,
+            manual_score=payload.get("override_score"),
+        )
+        if res["status"] == "SUCCESS":
+            # Pass the score/gate from the request if present
+            gate = payload.get("gate_threshold", 5)
+            background_tasks.add_task(
+                process_hologram_sync,
+                payload.get("memory_text", ""),
+                res["litho_id"],
+                gate,
+                payload.get("override_score"),
+            )
+        return res
+
+    # --- ACTION: SCRAPE (Web Scouting) ---
+    if action == "scrape":
+        return db.scrape_web(payload.get("url"))
+
+    # --- ACTION: SEARCH ---
+    if action == "search":
+        return db.search_lithograph(payload.get("query"), token_cache)
+
+    # --- ACTION: DELETE/PURGE/RESTORE/REHASH ---
+    if action == "delete":
+        return db.delete_lithograph(payload.get("target_id"))
+    if action == "delete_range":
+        return db.delete_range(payload.get("target_id"), payload.get("range_end"))
+    if action == "restore_range":
+        return db.restore_range(payload.get("target_id"), payload.get("range_end"))
+    if action == "rehash":
+        return db.rehash_chain(payload.get("note", "Manual Rehash"))
+
+    # --- ACTION: PULSE (Telemetry) ---
+    if action == "pulse":
+        conn = db.connect()
         try:
-            prev_hash = db_manager.get_latest_hash()
-            litho_res = db_manager.commit_lithograph(prev_hash, memory_text, GEMINI_CLIENT, TOKEN_DICTIONARY_CACHE, override_score)
-            if litho_res.get('status') == 'SUCCESS':
-                background_tasks.add_task(process_hologram_sync, memory_text, litho_res.get("litho_id"), 5, override_score)
-                return {"status": "SUCCESS", "message": "Signal Anchored.", "litho_id": litho_res.get("litho_id")}
-            return litho_res
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM node_links;")
+                synapses = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM chronicles WHERE is_active = TRUE;")
+                memories = cur.fetchone()[0]
+            return {
+                "status": "SUCCESS",
+                "total_synapses": synapses,
+                "total_memories": memories,
+            }
+        except:
+            return {"status": "FAILURE"}
+        finally:
+            conn.close()
+
+    # --- ACTION: CHAT (The Living Signal) ---
+    if action == "chat":
+        history = payload.get("history", "")
+        query = payload.get("memory_text", "")
+
+        # Fetch Personality Anchors (The Echoes)
+        echoes = get_core_echoes(limit=3)
+        echo_prompt = (
+            f"\n\n[LITHOGRAPHIC ECHOES (ACTIVE MEMORIES)]:\n{echoes}" if echoes else ""
+        )
+
+        try:
+            response = generate_with_fallback(
+                GEMINI_CLIENT,
+                contents=[f"ARCHITECT: {query}{echo_prompt}"],
+                system_prompt=TITAN_SYSTEM_PROMPT,
+                config=types.GenerateContentConfig(temperature=0.7),
+            )
+
+            ai_text = response.text
+
+            # --- CODED PROTOCOL SECURITY LAYER (V5.8) ---
+            # Extract protocol tags and scores
+            codes = re.findall(r"CORE_SIG_(MEM_01|SUM_02|FILE_03)", ai_text)
+            score_match = re.search(r"\[SCORE:\s*(\d+)\]", ai_text)
+            
+            # Singular Execution Enforcement
+            if len(codes) == 1:
+                protocol = codes[0]
+                score = int(score_match.group(1)) if score_match else 5
+                log(f"SECURITY: Valid Protocol Identified: {protocol} (Score: {score})")
+                
+                # Mapping the protocol code back to commit_type
+                commit_type = "memory" if protocol == "MEM_01" else "summary" if protocol == "SUM_02" else "file"
+                
+                # Logic to determine WHAT text to commit
+                # For summary, we might eventually want the AI to provide a specific block, 
+                # but for now we follow the existing pattern.
+                commit_content = history if protocol == "MEM_01" else ai_text
+                
+                # Trigger the background commit
+                log(f"SECURITY: Executing Auto-Commit via {protocol}")
+                res = db.commit_lithograph(
+                    db.get_latest_hash(),
+                    commit_content,
+                    GEMINI_CLIENT,
+                    token_cache,
+                    manual_score=score
+                )
+                if res["status"] == "SUCCESS":
+                    background_tasks.add_task(
+                        process_hologram_sync,
+                        commit_content,
+                        res["litho_id"],
+                        5, # gate_threshold
+                        score
+                    )
+            elif len(codes) > 1:
+                log_error(f"SECURITY ALERT: Multiple protocol codes detected ({len(codes)}). Blocking execution.")
+            # ---------------------------------------------
+
+            return {"status": "SUCCESS", "ai_text": ai_text}
+
         except Exception as e:
+            err_str = str(e).upper()
+            if "TITAN SHIELD" in err_str:
+                return JSONResponse(
+                    status_code=429,
+                    content={
+                        "status": "FATAL ERROR",
+                        "error": "Titan Shield: All signal paths are locked. Quota depleted.",
+                    },
+                )
+            log_error(f"Chat Error: {e}")
             return {"status": "FAILURE", "error": str(e)}
 
-    elif action == 'chat':
-        if not memory_text: return {"ai_text": "System Online.", "status": "HEARTBEAT"}
-        frontend_context = data.get('history', '')
-        full_prompt = f"{TITAN_SYSTEM_PROMPT}\n[CONTEXT]\n{frontend_context}\nUser: {memory_text}"
+    return {"status": "INVALID_ACTION"}
 
-        ai_reply = "Signal interrupted."
-        if GEMINI_CLIENT:
-            try:
-                response = generate_with_fallback(GEMINI_CLIENT, contents=[full_prompt], config=types.GenerateContentConfig(temperature=0.7))
-                ai_reply = response.text if response and hasattr(response, 'text') else ai_reply
-            except Exception as e:
-                ai_reply = f"Error: {str(e)}"
 
-        # --- CODED PROTOCOL SECURITY LAYER (V5.8) ---
-        # Extract protocol tags and scores
-        codes = re.findall(r"CORE_SIG_(MEM_01|SUM_02|FILE_03)", ai_reply)
-        score_match = re.search(r"\[SCORE:\s*(\d+)\]", ai_reply)
-        
-        # Singular Execution Enforcement
-        if len(codes) == 1:
-            protocol = codes[0]
-            ai_score = int(score_match.group(1)) if score_match else 5
-            log(f"SECURITY: Valid Protocol Identified: {protocol} (Score: {ai_score})")
-            
-            # Mapping the protocol code back to commit_type
-            commit_type = "memory" if protocol == "MEM_01" else "summary" if protocol == "SUM_02" else "file"
-            
-            # Logic to determine WHAT text to commit
-            if protocol == "FILE_03":
-                # Reserving existing [FILE_CONTENT] logic for file burns
-                file_content_match = re.search(r"\[FILE_CONTENT:\s*(.*?)\]\s*[\r\n]+(.*)", memory_text, re.DOTALL)
-                if file_content_match:
-                    filename = file_content_match.group(1).strip()
-                    clean_data = file_content_match.group(2).strip()
-                else:
-                    filename = "Chat_Commit.txt"
-                    clean_data = memory_text.strip()
+if __name__ == "__main__":
+    import uvicorn
 
-                if clean_data:
-                    chunks = chunkText(clean_data, CHUNK_SIZE, CHUNK_OVERLAP)
-                    for i, chunk in enumerate(chunks):
-                        official_header = f"[FILE: {filename} | PART {i+1}/{len(chunks)}] {chunk}"
-                        litho_res = db_manager.commit_lithograph(db_manager.get_latest_hash(), official_header, GEMINI_CLIENT, TOKEN_DICTIONARY_CACHE, ai_score)
-                        if litho_res.get('status') == 'SUCCESS':
-                            background_tasks.add_task(process_hologram_sync, official_header, litho_res.get("litho_id"), 5, ai_score)
-                    
-                    master_payload = f"[MASTER FILE ARCHIVE]: {filename} {clean_data}"
-                    db_manager.commit_lithograph(db_manager.get_latest_hash(), master_payload, GEMINI_CLIENT, TOKEN_DICTIONARY_CACHE, ai_score)
-            else:
-                save_target = ai_reply if protocol == "SUM_02" else f"{frontend_context}\nUser: {memory_text}\nAI: {ai_reply}"
-                try:
-                    litho_res = db_manager.commit_lithograph(db_manager.get_latest_hash(), save_target, GEMINI_CLIENT, TOKEN_DICTIONARY_CACHE, ai_score)
-                    if litho_res.get('status') == 'SUCCESS':
-                        background_tasks.add_task(process_hologram_sync, save_target, litho_res.get("litho_id"), 5, ai_score)
-                except Exception as e:
-                    log_error(f"Auto-Commit Fail: {e}")
-        elif len(codes) > 1:
-            log_error(f"SECURITY ALERT: Multiple protocol codes detected ({len(codes)}). Blocking execution.")
-        # ---------------------------------------------
-
-        return {"ai_text": ai_reply}
-
-    return {"status": "FAILURE", "error": f"Unknown Action: {action}"}
-
-# Cache init
-TOKEN_DICTIONARY_CACHE = {}
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
