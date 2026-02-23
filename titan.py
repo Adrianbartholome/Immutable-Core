@@ -1129,6 +1129,37 @@ def background_hologram_process(content_to_save: str, litho_id: int):
     # This remains async for new chats so user isn't blocked
     process_hologram_sync(content_to_save, litho_id)
 
+def background_shard_and_sync(filename: str, raw_file_text: str, score: int, token_cache: dict):
+    log(f"BACKGROUND SHARDING: '{filename}' initiated.")
+    chunks = chunkText(raw_file_text, CHUNK_SIZE, CHUNK_OVERLAP)
+    db = DBManager()
+    
+    # 1. Process Shards Sequentially (Mimics the UI Button)
+    for i, chunk in enumerate(chunks):
+        chunk_header = f"[FILE: {filename} | PART {i + 1}/{len(chunks)}]\n{chunk}"
+        
+        shard_res = db.commit_lithograph(
+            db.get_latest_hash(),
+            chunk_header,
+            GEMINI_CLIENT,
+            token_cache,
+            manual_score=score
+        )
+        
+        if shard_res["status"] == "SUCCESS":
+            process_hologram_sync(chunk_header, shard_res["litho_id"], 5, score)
+        
+        # The Magic Throttle: Protects Postgres DB Pool & Gemini API from exploding
+        time.sleep(1.5) 
+        
+    # 2. Process Master Archive last
+    master_payload = f"[MASTER FILE ARCHIVE]: {filename}\n{raw_file_text}"
+    res = db.commit_lithograph(db.get_latest_hash(), master_payload, GEMINI_CLIENT, token_cache, manual_score=score)
+    if res["status"] == "SUCCESS":
+        process_hologram_sync(master_payload, res["litho_id"], 5, score)
+        
+    log(f"BACKGROUND SHARDING: '{filename}' complete.")
+
 
 # --- API ROUTES ---
 class EventModel(BaseModel):
@@ -1578,46 +1609,30 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
                     commit_content = clean_history.strip()
                 
                 elif protocol == "FILE_03":
-                    # PROTOCOL V5.8 EXTRACTION & SHARDING
+                    # PROTOCOL V5.8 EXTRACTION & DELEGATION
                     full_context = f"{history}\nuser: {query}"
                     
-                    # Regex to extract the filename (Group 1) and the raw content (Group 2)
-                    file_match = re.search(r'\[FILE_CONTENT:\s*(.*?)\]\n(.*?)(?=\n(?:user|bot|system):|\Z)', full_context, flags=re.DOTALL)
+                    # Robust regex catches [FILE_CONTENT: name] or manual [FILE: name]
+                    file_match = re.search(r'\[(?:FILE_CONTENT|FILE):\s*(.*?)(?:\]|[:"\'\s]+)\s*\n?(.*?)(?=\n(?:user|bot|system):|\Z)', full_context, flags=re.DOTALL | re.IGNORECASE)
                     
                     if file_match:
-                        filename = file_match.group(1).strip()
+                        filename = re.sub(r'\]|[:"\']+', '', file_match.group(1)).strip()
                         raw_file_text = file_match.group(2).strip()
                         
-                        # 1. THE SHARDING PROTOCOL
-                        chunks = chunkText(raw_file_text, CHUNK_SIZE, CHUNK_OVERLAP)
-                        log(f"FILE_03: Sharding '{filename}' into {len(chunks)} fragments.")
+                        # Delegate to the sequential background worker to protect the DB
+                        background_tasks.add_task(
+                            background_shard_and_sync,
+                            filename,
+                            raw_file_text,
+                            score,
+                            token_cache
+                        )
                         
-                        for i, chunk in enumerate(chunks):
-                            # Format exactly like the frontend UI button
-                            chunk_header = f"[FILE: {filename} | PART {i + 1}/{len(chunks)}]\n{chunk}"
-                            
-                            # Burn the shard to the Lithographic Core
-                            shard_res = db.commit_lithograph(
-                                db.get_latest_hash(),
-                                chunk_header,
-                                GEMINI_CLIENT,
-                                token_cache,
-                                manual_score=score
-                            )
-                            # Queue the Holographic Sync (Weaver) for the shard
-                            if shard_res["status"] == "SUCCESS":
-                                background_tasks.add_task(
-                                    process_hologram_sync,
-                                    chunk_header,
-                                    shard_res["litho_id"],
-                                    5, # gate_threshold
-                                    score
-                                )
-                                
-                        # 2. THE MASTER ARCHIVE
-                        # We set commit_content to the Master payload, so the main route execution 
-                        # at the bottom of the script saves the Master Archive just like the UI does.
-                        commit_content = f"[MASTER FILE ARCHIVE]: {filename}\n{raw_file_text}"
+                        # Set a lightweight commit for the main thread to log the event
+                        commit_content = f"[SYSTEM LOG]: Protocol FILE_03 delegated to background Weaver for {filename}."
+                        
+                        # Gag Titan's chat output to prevent UI flooding
+                        ai_text = re.sub(r'\[(?:FILE|MASTER FILE).*?\n?.*', '\n[ARTIFACT SECURED: SHARDING IN BACKGROUND]', ai_text, flags=re.DOTALL | re.IGNORECASE).strip()
                     else:
                         commit_content = ai_text # Fallback if extraction fails
                 
