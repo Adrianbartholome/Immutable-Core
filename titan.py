@@ -1658,11 +1658,14 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
                 
                 elif protocol == "FILE_03":
                     # PROTOCOL V5.8 DORMANT RETRIEVAL & DELEGATION
-                    # Firebase doesn't hold the file, so we must grab the name from the UI's marker
-                    name_match = re.search(r'\[Artifact Processed\]:\s*([a-zA-Z0-9_\-\.]+)', history)
+                    full_context = f"{history}\nuser: {query}"
                     
-                    if name_match:
-                        filename = name_match.group(1).strip()
+                    # Find ALL file markers in the history/query
+                    name_matches = re.findall(r'\[Artifact Processed\]:\s*([a-zA-Z0-9_\-\.]+)', full_context)
+                    
+                    if name_matches:
+                        # Grab the MOST RECENT file uploaded (the last one in the list)
+                        filename = name_matches[-1].strip()
                         raw_file_text = None
                         
                         # Retrieve the massive text from the Dormant Stash
@@ -1691,7 +1694,7 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
                             commit_content = f"[SYSTEM LOG]: FILE_03 triggered, but '{filename}' was missing from the Dormant Cache."
                     else:
                         commit_content = f"[SYSTEM LOG]: FILE_03 triggered, but no active Artifact marker was found in the chat history."
-                        
+
                 else:
                     # SUM_02
                     commit_content = ai_text
