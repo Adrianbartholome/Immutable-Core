@@ -10,9 +10,8 @@ import requests
 import time
 import threading
 import cortex
+import google.generativeai as genai
 from datetime import datetime
-from google import genai
-from google.genai import types
 from fastapi import FastAPI, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -1571,12 +1570,23 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
                 commit_type = "memory" if protocol == "MEM_01" else "summary" if protocol == "SUM_02" else "file"
                 
                 # Logic to determine WHAT text to commit
+                # Logic to determine WHAT text to commit
                 if protocol == "MEM_01":
-                    # PROTOCOL V5.8 DE-INCEPTION FILTER: 
-                    # Strip out raw file payloads appended by the frontend before saving the chat log
-                    clean_history = re.sub(r'\[FILE_CONTENT:.*?(?=\n(?:user|bot|system):|\Z)', '', history, flags=re.DOTALL)
+                    # PROTOCOL V5.8 DE-INCEPTION: Strip out raw file payloads, leave only the conversation
+                    clean_history = re.sub(r'\[FILE_CONTENT:.*?(?=\n(?:user|bot|system):|\Z)', '[FILE ATTACHMENT REMOVED]', history, flags=re.DOTALL)
                     commit_content = clean_history.strip()
+                
+                elif protocol == "FILE_03":
+                    # PROTOCOL V5.8 EXTRACTION: Grab the file text from the current query or history
+                    full_context = f"{history}\nuser: {query}"
+                    file_match = re.search(r'(\[FILE_CONTENT:.*?)(?=\n(?:user|bot|system):|\Z)', full_context, flags=re.DOTALL)
+                    if file_match:
+                        commit_content = file_match.group(1).strip()
+                    else:
+                        commit_content = ai_text # Fallback if regex misses
+                
                 else:
+                    # SUM_02
                     commit_content = ai_text
                 
                 # Trigger the background commit
