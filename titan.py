@@ -1661,7 +1661,7 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
                     full_context = f"{history}\nuser: {query}"
                     
                     # Find ALL file markers in the history/query
-                    name_matches = re.findall(r'\[Artifact Processed\]:\s*([a-zA-Z0-9_\-\.]+)', full_context)
+                    name_matches = re.findall(r'\[(?:Artifact Processed\]:|FILE_CONTENT:)\s*([^\]\n]+)', full_context, flags=re.IGNORECASE)
                     
                     if name_matches:
                         # Grab the MOST RECENT file uploaded (the last one in the list)
