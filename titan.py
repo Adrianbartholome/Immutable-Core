@@ -1690,7 +1690,7 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
                                 score,
                                 token_cache
                             )
-                            commit_content = f"[SYSTEM LOG]: Protocol FILE_03 delegated. '{filename}' retrieved from Dormant Cache and passed to Weaver."
+                            # commit_content = f"[SYSTEM LOG]: Protocol FILE_03 delegated. '{filename}' retrieved from Dormant Cache and passed to Weaver."
                             ai_text = re.sub(r'\[(?:FILE|MASTER FILE).*?\n?.*', '\n[ARTIFACT RECALLED FROM CACHE: SHARDING IN BACKGROUND]', ai_text, flags=re.DOTALL | re.IGNORECASE).strip()
                         else:
                             commit_content = f"[SYSTEM LOG]: FILE_03 triggered, but '{filename}' was missing from the Dormant Cache."
