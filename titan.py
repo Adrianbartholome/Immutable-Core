@@ -1184,6 +1184,38 @@ def startup_event():
 def root_health_check():
     return {"status": "TITAN ONLINE", "mode": "PLATINUM_V5.8_CODED_PROTOCOL"}
 
+@app.get("/admin/anchor/last")
+def get_last_anchor():
+    """Fetches the most recent session anchor for UI initialization."""
+    db = DBManager()
+    conn = db.connect()
+    try:
+        with conn.cursor() as cur:
+            # Join the 4 Holographic tables where catalyst marks an anchor
+            cur.execute("""
+                SELECT f.world_state, d.logos, e.pathos, e.mythos, m.ethos, m.synthesis
+                FROM node_foundation f
+                JOIN node_data d ON f.hologram_id = d.hologram_id
+                JOIN node_essence e ON f.hologram_id = e.hologram_id
+                JOIN node_mission m ON f.hologram_id = m.hologram_id
+                WHERE f.catalyst = 'SESSION_ANCHOR'
+                ORDER BY f.chronos DESC LIMIT 1
+            """)
+            row = cur.fetchone()
+            if row:
+                return {"status": "SUCCESS", "anchor": {
+                    "chronos": row[0],
+                    "logos": row[1],
+                    "pathos": row[2] if isinstance(row[2], dict) else json.loads(row[2] or "{}"),
+                    "mythos": row[3],
+                    "ethos": row[4],
+                    "synthesis": row[5]
+                }}
+            return {"status": "FAILURE", "error": "No anchor found"}
+    except Exception as e:
+        return {"status": "FAILURE", "error": str(e)}
+    finally:
+        conn.close()
 
 # --- SHIELD ADMIN ROUTES ---
 @app.post("/admin/shield/reset")
@@ -1571,6 +1603,22 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
         history = payload.get("history", "")
         query = payload.get("memory_text", "")
 
+        # V5.8 DORMANT STASH: Silently cache uploaded files because Firebase won't keep them
+        file_stash_match = re.search(r'\[FILE_CONTENT:\s*(.*?)\]\s*\n(.*)', query, flags=re.DOTALL)
+        if file_stash_match:
+            stash_name = file_stash_match.group(1).strip()
+            stash_text = file_stash_match.group(2).strip()
+            stash_payload = f"[DORMANT ARTIFACT]: {stash_name}\n{stash_text}"
+            conn = db.connect()
+            try:
+                with conn.cursor() as stash_cur:
+                    stash_cur.execute("INSERT INTO chronicles (weighted_score, created_at, memory_text, previous_hash, current_hash, is_active) VALUES (0, NOW(), %s, 'DORMANT', 'DORMANT', FALSE);", (stash_payload,))
+                conn.commit()
+            except Exception:
+                pass
+            finally:
+                conn.close()
+
         # Fetch Personality Anchors (The Echoes)
         echoes = get_core_echoes(limit=3)
         echo_prompt = (
@@ -1609,35 +1657,41 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
                     commit_content = clean_history.strip()
                 
                 elif protocol == "FILE_03":
-                    # PROTOCOL V5.8 EXTRACTION & DELEGATION
-                    full_context = f"{history}\nuser: {query}"
+                    # PROTOCOL V5.8 DORMANT RETRIEVAL & DELEGATION
+                    # Firebase doesn't hold the file, so we must grab the name from the UI's marker
+                    name_match = re.search(r'\[Artifact Processed\]:\s*([a-zA-Z0-9_\-\.]+)', history)
                     
-                    # STRICT REGEX: ONLY look for FILE_CONTENT. This ignores Titan's conversational summaries entirely.
-                    # Added case-insensitivity for [uU]ser/[bB]ot to ensure it stops extracting at the exact right line.
-                    file_match = re.search(r'\[FILE_CONTENT:\s*(.*?)\]\s*\n(.*?)(?=\n(?:[uU]ser|[bB]ot|[sS]ystem):|\Z)', full_context, flags=re.DOTALL)
-                    
-                    if file_match:
-                        filename = file_match.group(1).strip()
-                        raw_file_text = file_match.group(2).strip()
+                    if name_match:
+                        filename = name_match.group(1).strip()
+                        raw_file_text = None
                         
-                        # Delegate to the sequential background worker
-                        background_tasks.add_task(
-                            background_shard_and_sync,
-                            filename,
-                            raw_file_text,
-                            score,
-                            token_cache
-                        )
-                        
-                        # Log the event without bloating the DB
-                        commit_content = f"[SYSTEM LOG]: Protocol FILE_03 delegated to background Weaver for {filename}."
-                        
-                        # Gag Titan's chat output to prevent UI flooding
-                        ai_text = re.sub(r'\[(?:FILE|MASTER FILE).*?\n?.*', '\n[ARTIFACT SECURED: SHARDING IN BACKGROUND]', ai_text, flags=re.DOTALL | re.IGNORECASE).strip()
+                        # Retrieve the massive text from the Dormant Stash
+                        conn = db.connect()
+                        try:
+                            with conn.cursor() as fetch_cur:
+                                fetch_cur.execute("SELECT memory_text FROM chronicles WHERE is_active = FALSE AND previous_hash = 'DORMANT' AND memory_text LIKE %s ORDER BY id DESC LIMIT 1", (f"[DORMANT ARTIFACT]: {filename}%",))
+                                row = fetch_cur.fetchone()
+                                if row:
+                                    raw_file_text = row[0].replace(f"[DORMANT ARTIFACT]: {filename}\n", "")
+                        finally:
+                            conn.close()
+                            
+                        if raw_file_text:
+                            # WE FOUND IT. Delegate to the sequential background worker just like the UI button!
+                            background_tasks.add_task(
+                                background_shard_and_sync,
+                                filename,
+                                raw_file_text,
+                                score,
+                                token_cache
+                            )
+                            commit_content = f"[SYSTEM LOG]: Protocol FILE_03 delegated. '{filename}' retrieved from Dormant Cache and passed to Weaver."
+                            ai_text = re.sub(r'\[(?:FILE|MASTER FILE).*?\n?.*', '\n[ARTIFACT RECALLED FROM CACHE: SHARDING IN BACKGROUND]', ai_text, flags=re.DOTALL | re.IGNORECASE).strip()
+                        else:
+                            commit_content = f"[SYSTEM LOG]: FILE_03 triggered, but '{filename}' was missing from the Dormant Cache."
                     else:
-                        # If the regex fails, tell the DB exactly why so we aren't guessing
-                        commit_content = f"[SYSTEM LOG]: FILE_03 triggered, but strict [FILE_CONTENT] tags were missing from history. Extraction failed."
-                
+                        commit_content = f"[SYSTEM LOG]: FILE_03 triggered, but no active Artifact marker was found in the chat history."
+                        
                 else:
                     # SUM_02
                     commit_content = ai_text
