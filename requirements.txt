@@ -1,7 +1,7 @@
 fastapi
 uvicorn
 psycopg2-binary
-google-generativeai
+google-genai
 requests
 python-multipart
 networkx>=3.0

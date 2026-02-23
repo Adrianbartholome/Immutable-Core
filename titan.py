@@ -10,7 +10,8 @@ import requests
 import time
 import threading
 import cortex
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from datetime import datetime
 from fastapi import FastAPI, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
