@@ -1571,9 +1571,13 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
                 commit_type = "memory" if protocol == "MEM_01" else "summary" if protocol == "SUM_02" else "file"
                 
                 # Logic to determine WHAT text to commit
-                # For summary, we might eventually want the AI to provide a specific block, 
-                # but for now we follow the existing pattern.
-                commit_content = history if protocol == "MEM_01" else ai_text
+                if protocol == "MEM_01":
+                    # PROTOCOL V5.8 DE-INCEPTION FILTER: 
+                    # Strip out raw file payloads appended by the frontend before saving the chat log
+                    clean_history = re.sub(r'\[FILE_CONTENT:.*?(?=\n(?:user|bot|system):|\Z)', '', history, flags=re.DOTALL)
+                    commit_content = clean_history.strip()
+                else:
+                    commit_content = ai_text
                 
                 # Trigger the background commit
                 log(f"SECURITY: Executing Auto-Commit via {protocol}")
