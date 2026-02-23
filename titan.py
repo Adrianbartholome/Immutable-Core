@@ -1612,14 +1612,15 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
                     # PROTOCOL V5.8 EXTRACTION & DELEGATION
                     full_context = f"{history}\nuser: {query}"
                     
-                    # Robust regex catches [FILE_CONTENT: name] or manual [FILE: name]
-                    file_match = re.search(r'\[(?:FILE_CONTENT|FILE):\s*(.*?)(?:\]|[:"\'\s]+)\s*\n?(.*?)(?=\n(?:user|bot|system):|\Z)', full_context, flags=re.DOTALL | re.IGNORECASE)
+                    # STRICT REGEX: ONLY look for FILE_CONTENT. This ignores Titan's conversational summaries entirely.
+                    # Added case-insensitivity for [uU]ser/[bB]ot to ensure it stops extracting at the exact right line.
+                    file_match = re.search(r'\[FILE_CONTENT:\s*(.*?)\]\s*\n(.*?)(?=\n(?:[uU]ser|[bB]ot|[sS]ystem):|\Z)', full_context, flags=re.DOTALL)
                     
                     if file_match:
-                        filename = re.sub(r'\]|[:"\']+', '', file_match.group(1)).strip()
+                        filename = file_match.group(1).strip()
                         raw_file_text = file_match.group(2).strip()
                         
-                        # Delegate to the sequential background worker to protect the DB
+                        # Delegate to the sequential background worker
                         background_tasks.add_task(
                             background_shard_and_sync,
                             filename,
@@ -1628,13 +1629,14 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
                             token_cache
                         )
                         
-                        # Set a lightweight commit for the main thread to log the event
+                        # Log the event without bloating the DB
                         commit_content = f"[SYSTEM LOG]: Protocol FILE_03 delegated to background Weaver for {filename}."
                         
                         # Gag Titan's chat output to prevent UI flooding
                         ai_text = re.sub(r'\[(?:FILE|MASTER FILE).*?\n?.*', '\n[ARTIFACT SECURED: SHARDING IN BACKGROUND]', ai_text, flags=re.DOTALL | re.IGNORECASE).strip()
                     else:
-                        commit_content = ai_text # Fallback if extraction fails
+                        # If the regex fails, tell the DB exactly why so we aren't guessing
+                        commit_content = f"[SYSTEM LOG]: FILE_03 triggered, but strict [FILE_CONTENT] tags were missing from history. Extraction failed."
                 
                 else:
                     # SUM_02
