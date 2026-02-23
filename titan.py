@@ -26,6 +26,7 @@ origins = [
     "http://localhost:5173",  # Your local Vite dev server
     "https://www.exitse7en.com",  # Your main production domain
     "https://exitse7en.com",  # Non-www version for safety
+    "http://187.77.102.100:40529",  # AU
 ]
 
 app.add_middleware(
