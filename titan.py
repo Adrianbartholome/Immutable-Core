@@ -1635,34 +1635,95 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
         query = payload.get("memory_text", "")
 
         # V5.8 DORMANT STASH: Silently cache uploaded files because Firebase won't keep them
+        # V5.8 SMART DORMANT STASH: Route to Cache or Standard Injection
         file_stash_match = re.search(r'\[FILE_CONTENT:\s*(.*?)\]\s*\n(.*)', query, flags=re.DOTALL)
         if file_stash_match:
             stash_name = file_stash_match.group(1).strip()
             stash_text = file_stash_match.group(2).strip()
             stash_payload = f"[DORMANT ARTIFACT]: {stash_name}\n{stash_text}"
+            
+            # Default to standard DORMANT state
+            cache_marker = "DORMANT"
+            
+            # If the file is massive (roughly > 100k chars), attempt Gemini Caching
+            if len(stash_text) > 100000 and GEMINI_CLIENT:
+                log(f"Massive Artifact Detected. Attempting to build Gemini Context Cache for '{stash_name}'...")
+                try:
+                    cache = GEMINI_CLIENT.caches.create(
+                        model='gemini-2.5-flash',
+                        contents=[stash_payload],
+                        config=types.CreateCachedContentConfig(ttl="3600s") # Cache lives for 1 hour
+                    )
+                    cache_marker = f"CACHE:{cache.name}"
+                    log(f"Context Cache Activated: {cache.name}")
+                except Exception as e:
+                    log_error(f"Cache build failed (likely under 32k token minimum). Falling back to standard stash: {e}")
+
             conn = db.connect()
             try:
                 with conn.cursor() as stash_cur:
-                    stash_cur.execute("INSERT INTO chronicles (weighted_score, created_at, memory_text, previous_hash, current_hash, is_active) VALUES (0, NOW(), %s, 'DORMANT', 'DORMANT', FALSE);", (stash_payload,))
+                    # We store the Cache ID in the 'current_hash' column so we can find it later!
+                    stash_cur.execute(
+                        "INSERT INTO chronicles (weighted_score, created_at, memory_text, previous_hash, current_hash, is_active) VALUES (0, NOW(), %s, 'DORMANT', %s, FALSE);", 
+                        (stash_payload, cache_marker)
+                    )
                 conn.commit()
-            except Exception:
-                pass
+            except Exception as e:
+                log_error(f"Dormant Stash Error: {e}")
             finally:
                 conn.close()
+            
+            # Clean the massive payload out of the active chat string so we don't send it twice!
+            query = re.sub(r'\[FILE_CONTENT:.*?\]\s*\n.*', f'[FILE UPLOADED: {stash_name}]', query, flags=re.DOTALL)
 
-        # Fetch Personality Anchors (The Echoes)
+        # --- V5.8 DYNAMIC CONTEXT INJECTION & CACHE ROUTING ---
+        active_cache_name = None
+        active_file_context = ""
+        full_chat_scope = f"{history}\n{query}"
+        
+        file_mentions = re.findall(r'\[FILE:\s*([^\]]+)\]', full_chat_scope, flags=re.IGNORECASE)
+        if file_mentions:
+            latest_file = file_mentions[-1].strip()
+            conn = db.connect()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT memory_text, current_hash FROM chronicles WHERE is_active = FALSE AND previous_hash = 'DORMANT' AND memory_text LIKE %s ORDER BY id DESC LIMIT 1", (f"[DORMANT ARTIFACT]: {latest_file}%",))
+                    row = cur.fetchone()
+                    if row:
+                        db_hash = row[1]
+                        if db_hash and db_hash.startswith("CACHE:"):
+                            active_cache_name = db_hash.replace("CACHE:", "")
+                        else:
+                            clean_payload = row[0].replace(f"[DORMANT ARTIFACT]: {latest_file}\n", "")
+                            active_file_context = f"\n[SYSTEM: TRANSIENT ARTIFACT CONTENT FOR CONTEXT - {latest_file}]\n{clean_payload}\n[END ARTIFACT CONTENT]\n"
+            finally:
+                conn.close()
+        # ------------------------------------------------
+
         echoes = get_core_echoes(limit=3)
-        echo_prompt = (
-            f"\n\n[LITHOGRAPHIC ECHOES (ACTIVE MEMORIES)]:\n{echoes}" if echoes else ""
-        )
+        echo_prompt = f"\n\n[LITHOGRAPHIC ECHOES (ACTIVE MEMORIES)]:\n{echoes}" if echoes else ""
 
         try:
-            response = generate_with_fallback(
-                GEMINI_CLIENT,
-                contents=[f"ARCHITECT: {query}{echo_prompt}"],
-                system_prompt=TITAN_SYSTEM_PROMPT,
-                config=types.GenerateContentConfig(temperature=0.7),
-            )
+            # Route 1: Massive File (Use Cheap Context Cache)
+            if active_cache_name and GEMINI_CLIENT:
+                log(f"Routing request through Gemini Context Cache: {active_cache_name}")
+                response = GEMINI_CLIENT.models.generate_content(
+                    model='gemini-2.5-flash',
+                    contents=[f"ARCHITECT: {query}{echo_prompt}"],
+                    config=types.GenerateContentConfig(
+                        temperature=0.7,
+                        system_instruction=TITAN_SYSTEM_PROMPT,
+                        cached_content=active_cache_name
+                    )
+                )
+            # Route 2: Standard/Small File (Use Standard Injection)
+            else:
+                response = generate_with_fallback(
+                    GEMINI_CLIENT,
+                    contents=[f"{active_file_context}\nARCHITECT: {query}{echo_prompt}"],
+                    system_prompt=TITAN_SYSTEM_PROMPT,
+                    config=types.GenerateContentConfig(temperature=0.7),
+                )
 
             ai_text = response.text
 
@@ -1711,10 +1772,26 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
                             conn = db.connect()
                             try:
                                 with conn.cursor() as fetch_cur:
-                                    fetch_cur.execute("SELECT memory_text FROM chronicles WHERE is_active = FALSE AND previous_hash = 'DORMANT' AND memory_text LIKE %s ORDER BY id DESC LIMIT 1", (f"[DORMANT ARTIFACT]: {filename}%",))
+                                    fetch_cur.execute("SELECT id, memory_text, current_hash FROM chronicles WHERE is_active = FALSE AND previous_hash = 'DORMANT' AND memory_text LIKE %s ORDER BY id DESC LIMIT 1", (f"[DORMANT ARTIFACT]: {filename}%",))
                                     row = fetch_cur.fetchone()
                                     if row:
-                                        raw_file_text = row[0].replace(f"[DORMANT ARTIFACT]: {filename}\n", "")
+                                        dormant_id = row[0]
+                                        raw_file_text = row[1].replace(f"[DORMANT ARTIFACT]: {filename}\n", "")
+                                        db_hash = row[2]
+                                        
+                                        # 1. PURGE GOOGLE CACHE (Stop the billing)
+                                        if db_hash and db_hash.startswith("CACHE:") and GEMINI_CLIENT:
+                                            cache_id = db_hash.replace("CACHE:", "")
+                                            try:
+                                                GEMINI_CLIENT.caches.delete(name=cache_id)
+                                                log(f"SECURITY: Gemini Context Cache '{cache_id}' obliterated.")
+                                            except Exception as e:
+                                                log_error(f"Failed to delete Google Cache: {e}")
+
+                                        # 2. PURGE POSTGRES STASH (Stop the bloat)
+                                        fetch_cur.execute("DELETE FROM chronicles WHERE id = %s", (dormant_id,))
+                                        conn.commit()
+                                        log(f"SECURITY: Local Dormant Artifact '{filename}' purged after successful retrieval.")
                             finally:
                                 conn.close()
                                 
@@ -1722,6 +1799,8 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
                                 # WE FOUND IT. Delegate to the sequential background worker!
                                 background_tasks.add_task(background_shard_and_sync, filename, raw_file_text, score, token_cache)
                                 ai_text = re.sub(r'\[(?:FILE|MASTER FILE).*?\n?.*', '\n[ARTIFACT RECALLED FROM CACHE: SHARDING IN BACKGROUND]', ai_text, flags=re.DOTALL | re.IGNORECASE).strip()
+                                # THE FIX: Define commit_content for the success path so the thread doesn't crash
+                                commit_content = f"[SYSTEM LOG]: Protocol FILE_03 delegated. '{filename}' retrieved from Dormant Cache and passed to Weaver."
                             else:
                                 commit_content = f"[SYSTEM LOG]: FILE_03 triggered, but '{filename}' was missing from the Dormant Cache."
                     else:
