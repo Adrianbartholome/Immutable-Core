@@ -483,6 +483,28 @@ class DBManager:
             if conn:
                 conn.close()
 
+    def check_artifact_exists(self, filename):
+        """
+        ANTI-DUPLICATION PROTOCOL:
+        Queries the Lithographic Core for the exact Master Archive signature.
+        Catches both frontend (' ' separator) and backend ('\n' separator) formatting.
+        """
+        conn = None
+        try:
+            conn = self.connect()
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id FROM chronicles WHERE is_active = TRUE AND memory_text LIKE %s LIMIT 1;",
+                    (f"[MASTER FILE ARCHIVE]: {filename}%",)
+                )
+                return cur.fetchone() is not None
+        except Exception as e:
+            log_error(f"Artifact Anti-Duplication Check Error: {e}")
+            return False
+        finally:
+            if conn:
+                conn.close()
+
     def get_unwoven_holograms(self, limit=5):
         conn = None
         try:
@@ -1567,6 +1589,13 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
     if action == "scrape":
         return db.scrape_web(payload.get("url"))
 
+    # --- ACTION: CHECK ARTIFACT (Anti-Duplication) ---
+    if action == "check_artifact":
+        return {
+            "status": "SUCCESS", 
+            "exists": db.check_artifact_exists(payload.get("filename", ""))
+        }
+
     # --- ACTION: SEARCH ---
     if action == "search":
         return db.search_lithograph(payload.get("query"), token_cache)
@@ -1668,34 +1697,33 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
                     name_matches = re.findall(r'\[(?:FILE|FILE_CONTENT):\s*([^\]\|]+)', full_context, flags=re.IGNORECASE)
                     
                     if name_matches:
-                        # Grab the MOST RECENT file uploaded (the last one in the list)
                         filename = name_matches[-1].strip()
-                        raw_file_text = None
                         
-                        # Retrieve the massive text from the Dormant Stash
-                        conn = db.connect()
-                        try:
-                            with conn.cursor() as fetch_cur:
-                                fetch_cur.execute("SELECT memory_text FROM chronicles WHERE is_active = FALSE AND previous_hash = 'DORMANT' AND memory_text LIKE %s ORDER BY id DESC LIMIT 1", (f"[DORMANT ARTIFACT]: {filename}%",))
-                                row = fetch_cur.fetchone()
-                                if row:
-                                    raw_file_text = row[0].replace(f"[DORMANT ARTIFACT]: {filename}\n", "")
-                        finally:
-                            conn.close()
-                            
-                        if raw_file_text:
-                            # WE FOUND IT. Delegate to the sequential background worker just like the UI button!
-                            background_tasks.add_task(
-                                background_shard_and_sync,
-                                filename,
-                                raw_file_text,
-                                score,
-                                token_cache
-                            )
-                            # commit_content = f"[SYSTEM LOG]: Protocol FILE_03 delegated. '{filename}' retrieved from Dormant Cache and passed to Weaver."
-                            ai_text = re.sub(r'\[(?:FILE|MASTER FILE).*?\n?.*', '\n[ARTIFACT RECALLED FROM CACHE: SHARDING IN BACKGROUND]', ai_text, flags=re.DOTALL | re.IGNORECASE).strip()
+                        # ANTI-DUPLICATION INTERCEPT
+                        if db.check_artifact_exists(filename):
+                            commit_content = f"[SYSTEM LOG]: Protocol FILE_03 blocked. '{filename}' is already woven into the Lithographic Core."
+                            ai_text = re.sub(r'\[(?:FILE|MASTER FILE).*?\n?.*', '\n[ARTIFACT REJECTED: ALREADY EXISTS IN CORE]', ai_text, flags=re.DOTALL | re.IGNORECASE).strip()
+                            log(f"SECURITY: Blocked redundant ingestion of '{filename}'.")
                         else:
-                            commit_content = f"[SYSTEM LOG]: FILE_03 triggered, but '{filename}' was missing from the Dormant Cache."
+                            raw_file_text = None
+                            
+                            # Retrieve the massive text from the Dormant Stash
+                            conn = db.connect()
+                            try:
+                                with conn.cursor() as fetch_cur:
+                                    fetch_cur.execute("SELECT memory_text FROM chronicles WHERE is_active = FALSE AND previous_hash = 'DORMANT' AND memory_text LIKE %s ORDER BY id DESC LIMIT 1", (f"[DORMANT ARTIFACT]: {filename}%",))
+                                    row = fetch_cur.fetchone()
+                                    if row:
+                                        raw_file_text = row[0].replace(f"[DORMANT ARTIFACT]: {filename}\n", "")
+                            finally:
+                                conn.close()
+                                
+                            if raw_file_text:
+                                # WE FOUND IT. Delegate to the sequential background worker!
+                                background_tasks.add_task(background_shard_and_sync, filename, raw_file_text, score, token_cache)
+                                ai_text = re.sub(r'\[(?:FILE|MASTER FILE).*?\n?.*', '\n[ARTIFACT RECALLED FROM CACHE: SHARDING IN BACKGROUND]', ai_text, flags=re.DOTALL | re.IGNORECASE).strip()
+                            else:
+                                commit_content = f"[SYSTEM LOG]: FILE_03 triggered, but '{filename}' was missing from the Dormant Cache."
                     else:
                         commit_content = f"[SYSTEM LOG]: FILE_03 triggered, but no active Artifact marker was found in the chat history."
 
