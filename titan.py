@@ -658,6 +658,15 @@ class DBManager:
                     cur.execute(
                         "DELETE FROM node_mission WHERE hologram_id IN %s", (holo_ids, )
                     )
+                    
+                    # THE NEW FIX: Destroy the remaining Holographic layers before the Lithographic root
+                    cur.execute(
+                        "DELETE FROM node_data WHERE hologram_id IN %s", (holo_ids, )
+                    )
+                    cur.execute(
+                        "DELETE FROM node_foundation WHERE hologram_id IN %s", (holo_ids, )
+                    )
+
                 cur.execute("DELETE FROM chronicles WHERE id IN %s", (ids_tuple, ))
                 deleted_count = cur.rowcount
 
