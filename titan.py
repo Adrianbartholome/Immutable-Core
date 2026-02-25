@@ -971,7 +971,9 @@ class HolographicManager:
 
 class RemapRequest(BaseModel):
     spacing: float = 1.0
-    cluster_strength: float = 1.0
+    clusterStrength: float = 1.0
+    scale: float = 2000.0
+    prismZ: float = 0.0
 
 
 # --- SYNCHRONOUS PROCESSORS ---
@@ -1401,6 +1403,41 @@ def get_neural_map():
         return {"status": "FAILURE", "error": str(e)}
     finally:
         conn.close()
+
+@app.get("/cortex/synapses")
+def get_neural_synapses():
+    """Serves the active edge connections to the WebGL Visualizer."""
+    db = DBManager()
+    conn = db.connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT source_hologram_id, target_hologram_id FROM node_links;")
+            data = cur.fetchall()
+            
+        # Pack the tuples into an array of arrays for the React frontend
+        synapses = [[str(r[0]), str(r[1])] for r in data]
+        return {"status": "SUCCESS", "synapses": synapses}
+    except Exception as e:
+        return {"status": "FAILURE", "error": str(e)}
+    finally:
+        conn.close()
+
+@app.post("/admin/recalculate_map")
+def recalculate_cortex_map(req: RemapRequest, background_tasks: BackgroundTasks):
+    """Triggers the physics engine to regenerate spatial coordinates."""
+    try:
+        db = DBManager()
+        # Hand this heavy calculation off to a background thread so the UI doesn't freeze
+        background_tasks.add_task(
+            cortex.regenerate_neural_map,
+            db.connection_string,
+            req.spacing,
+            req.clusterStrength,
+            req.scale
+        )
+        return {"status": "SUCCESS"}
+    except Exception as e:
+        return {"status": "FAILURE", "error": str(e)}
 
 
 @app.post("/admin/anchor")
