@@ -1169,11 +1169,15 @@ def background_hologram_process(content_to_save: str, litho_id: int):
 def background_shard_and_sync(filename: str, raw_file_text: str, score: int, token_cache: dict):
     log(f"BACKGROUND SHARDING: '{filename}' initiated.")
     chunks = chunkText(raw_file_text, CHUNK_SIZE, CHUNK_OVERLAP)
+    total_chunks = len(chunks)
     db = DBManager()
+    
+    update_system_status(f"Sharding '{filename}': 0/{total_chunks}...")
     
     # 1. Process Shards Sequentially (Mimics the UI Button)
     for i, chunk in enumerate(chunks):
-        chunk_header = f"[FILE: {filename} | PART {i + 1}/{len(chunks)}]\n{chunk}"
+        update_system_status(f"Sharding '{filename}': {i + 1}/{total_chunks}...")
+        chunk_header = f"[FILE: {filename} | PART {i + 1}/{total_chunks}]\n{chunk}"
         
         shard_res = db.commit_lithograph(
             db.get_latest_hash(),
@@ -1190,12 +1194,14 @@ def background_shard_and_sync(filename: str, raw_file_text: str, score: int, tok
         time.sleep(1.5) 
         
     # 2. Process Master Archive last
+    update_system_status(f"Finalizing Master Archive for '{filename}'...")
     master_payload = f"[MASTER FILE ARCHIVE]: {filename}\n{raw_file_text}"
     res = db.commit_lithograph(db.get_latest_hash(), master_payload, GEMINI_CLIENT, token_cache, manual_score=score)
     if res["status"] == "SUCCESS":
         process_hologram_sync(master_payload, res["litho_id"], 5, score)
         
     log(f"BACKGROUND SHARDING: '{filename}' complete.")
+    update_system_status("System Ready.")
 
 
 # --- API ROUTES ---
@@ -1220,6 +1226,11 @@ def startup_event():
 @app.get("/")
 def root_health_check():
     return {"status": "TITAN ONLINE", "mode": "PLATINUM_V5.8_CODED_PROTOCOL"}
+
+@app.get("/cortex/status")
+def get_system_status():
+    """Returns the current background processing state to the React UI."""
+    return {"status": "SUCCESS", "message": CURRENT_SYSTEM_STATUS}
 
 @app.get("/admin/anchor/last")
 def get_last_anchor():
@@ -1697,10 +1708,13 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
             if len(stash_text) > 100000 and GEMINI_CLIENT:
                 log(f"Massive Artifact Detected. Attempting to build Gemini Context Cache for '{stash_name}'...")
                 try:
+                    # THE FIX: 'contents' must be inside the config object in the new SDK
                     cache = GEMINI_CLIENT.caches.create(
                         model='gemini-2.5-flash',
-                        contents=[stash_payload],
-                        config=types.CreateCachedContentConfig(ttl="3600s") # Cache lives for 1 hour
+                        config=types.CreateCachedContentConfig(
+                            contents=[stash_payload],
+                            ttl="3600s"
+                        ) 
                     )
                     cache_marker = f"CACHE:{cache.name}"
                     log(f"Context Cache Activated: {cache.name}")
