@@ -40,8 +40,10 @@ def regenerate_neural_map(db_connection_string, spacing=1.0, cluster_strength=1.
                     nm.ethos,   -- Added
                     ne.mythos   -- Added
                 FROM node_foundation nf
+                JOIN chronicles c ON nf.lithograph_id = c.id
                 LEFT JOIN node_mission nm ON nf.hologram_id = nm.hologram_id
                 LEFT JOIN node_essence ne ON nf.hologram_id = ne.hologram_id
+                WHERE c.is_active = TRUE
             """
             )
             nodes = cur.fetchall()

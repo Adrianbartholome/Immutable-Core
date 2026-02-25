@@ -645,18 +645,18 @@ class DBManager:
                 holo_rows = cur.fetchall()
                 if holo_rows:
                     holo_ids = tuple([str(r[0]) for r in holo_rows])
+                    
+                    # THE FIX: Destroy all connected synapses before the nodes are purged
+                    cur.execute(
+                        "DELETE FROM node_links WHERE source_hologram_id IN %s OR target_hologram_id IN %s", 
+                        (holo_ids, holo_ids)
+                    )
+                    
                     cur.execute(
                         "DELETE FROM node_essence WHERE hologram_id IN %s", (holo_ids, )
                     )
                     cur.execute(
                         "DELETE FROM node_mission WHERE hologram_id IN %s", (holo_ids, )
-                    )
-                    cur.execute(
-                        "DELETE FROM node_data WHERE hologram_id IN %s", (holo_ids, )
-                    )
-                    cur.execute(
-                        "DELETE FROM node_foundation WHERE hologram_id IN %s",
-                        (holo_ids, ),
                     )
                 cur.execute("DELETE FROM chronicles WHERE id IN %s", (ids_tuple, ))
                 deleted_count = cur.rowcount
