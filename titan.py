@@ -1708,10 +1708,11 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
             if len(stash_text) > 100000 and GEMINI_CLIENT:
                 log(f"Massive Artifact Detected. Attempting to build Gemini Context Cache for '{stash_name}'...")
                 try:
-                    # THE FIX: 'contents' must be inside the config object in the new SDK
+                    # THE FIX: system_instruction must be defined when the cache is CREATED
                     cache = GEMINI_CLIENT.caches.create(
                         model='gemini-2.5-flash',
                         config=types.CreateCachedContentConfig(
+                            system_instruction=TITAN_SYSTEM_PROMPT,
                             contents=[stash_payload],
                             ttl="3600s"
                         ) 
@@ -1767,6 +1768,7 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
 
         try:
             # Route 1: Massive File (Use Cheap Context Cache)
+            # Route 1: Massive File (Use Cheap Context Cache)
             if active_cache_name and GEMINI_CLIENT:
                 log(f"Routing request through Gemini Context Cache: {active_cache_name}")
                 response = GEMINI_CLIENT.models.generate_content(
@@ -1774,7 +1776,7 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
                     contents=[f"ARCHITECT: {query}{echo_prompt}"],
                     config=types.GenerateContentConfig(
                         temperature=0.7,
-                        system_instruction=TITAN_SYSTEM_PROMPT,
+                        # THE FIX: Remove system_instruction here, it is already baked into the cache!
                         cached_content=active_cache_name
                     )
                 )
