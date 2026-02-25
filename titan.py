@@ -632,11 +632,14 @@ class DBManager:
         try:
             conn = self.connect()
             cur = conn.cursor()
+            log("REHASH PROTOCOL INITIATED. Scanning for inactive sectors...")
+            
             cur.execute("SELECT id FROM chronicles WHERE is_active = FALSE;")
             inactive_rows = cur.fetchall()
             inactive_ids = [r[0] for r in inactive_rows]
             deleted_count = 0
             if inactive_ids:
+                log(f"REHASH: Found {len(inactive_ids)} inactive shards. Executing deep purge...")
                 ids_tuple = tuple(inactive_ids)
                 cur.execute(
                     "SELECT hologram_id FROM node_foundation WHERE lithograph_id IN %s",
@@ -645,35 +648,24 @@ class DBManager:
                 holo_rows = cur.fetchall()
                 if holo_rows:
                     holo_ids = tuple([str(r[0]) for r in holo_rows])
+                    log(f"REHASH: Purging {len(holo_ids)} holographic reflections...")
                     
-                    # THE FIX: Destroy all connected synapses before the nodes are purged
-                    cur.execute(
-                        "DELETE FROM node_links WHERE source_hologram_id IN %s OR target_hologram_id IN %s", 
-                        (holo_ids, holo_ids)
-                    )
+                    cur.execute("DELETE FROM node_links WHERE source_hologram_id IN %s OR target_hologram_id IN %s", (holo_ids, holo_ids))
+                    cur.execute("DELETE FROM node_essence WHERE hologram_id IN %s", (holo_ids, ))
+                    cur.execute("DELETE FROM node_mission WHERE hologram_id IN %s", (holo_ids, ))
+                    cur.execute("DELETE FROM node_data WHERE hologram_id IN %s", (holo_ids, ))
                     
-                    cur.execute(
-                        "DELETE FROM node_essence WHERE hologram_id IN %s", (holo_ids, )
-                    )
-                    cur.execute(
-                        "DELETE FROM node_mission WHERE hologram_id IN %s", (holo_ids, )
-                    )
+                    # JUST IN CASE: Purge the cortex map so it doesn't throw a foreign key error
+                    cur.execute("DELETE FROM cortex_map WHERE hologram_id IN %s", (holo_ids, ))
                     
-                    # THE NEW FIX: Destroy the remaining Holographic layers before the Lithographic root
-                    cur.execute(
-                        "DELETE FROM node_data WHERE hologram_id IN %s", (holo_ids, )
-                    )
-                    cur.execute(
-                        "DELETE FROM node_foundation WHERE hologram_id IN %s", (holo_ids, )
-                    )
+                    cur.execute("DELETE FROM node_foundation WHERE hologram_id IN %s", (holo_ids, ))
 
                 cur.execute("DELETE FROM chronicles WHERE id IN %s", (ids_tuple, ))
                 deleted_count = cur.rowcount
+                log(f"REHASH: Deep purge complete. Destroyed {deleted_count} root records.")
 
             now = datetime.now()
-            marker_text = (
-                f"[SYSTEM EVENT]: Global Rehash Initiated. Reason: {reason_note}"
-            )
+            marker_text = f"[SYSTEM EVENT]: Global Rehash Initiated. Reason: {reason_note}"
             cur.execute(
                 "INSERT INTO chronicles (weighted_score, created_at, memory_text, previous_hash, current_hash, is_active) VALUES (9, %s, %s, 'PENDING', 'PENDING', TRUE);",
                 (now, marker_text),
@@ -683,6 +675,9 @@ class DBManager:
                 "SELECT id, weighted_score, created_at, memory_text FROM chronicles WHERE is_active = TRUE ORDER BY created_at ASC, id ASC;"
             )
             rows = cur.fetchall()
+            total_rows = len(rows)
+            log(f"REHASH: Recalculating Cryptographic Hash Chain for {total_rows} active blocks...")
+            
             previous_hash = ""
             rehashed_count = 0
             for row in rows:
@@ -701,14 +696,21 @@ class DBManager:
                 )
                 previous_hash = new_current_hash
                 rehashed_count += 1
+                
+                # Terminal Progress Bar so we know it isn't frozen
+                if rehashed_count % 100 == 0 or rehashed_count == total_rows:
+                    log(f"REHASH: Chain rebuilt {rehashed_count}/{total_rows}...")
 
             conn.commit()
+            log(f"REHASH PROTOCOL COMPLETE. Network secured.")
             return {
                 "status": "SUCCESS",
                 "purged_count": deleted_count,
                 "rehashed_count": rehashed_count,
             }
         except Exception as e:
+            # THIS IS CRITICAL: If it crashes, tell the terminal why!
+            log_error(f"REHASH CRASH: {e}")
             if conn:
                 conn.rollback()
             return {"status": "FAILURE", "error": str(e)}
