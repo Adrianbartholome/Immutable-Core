@@ -1069,7 +1069,8 @@ def process_hologram_sync(
             try:
                 refraction = generate_with_fallback(
                     GEMINI_CLIENT,
-                    contents=[f"INPUT DATA TO REFRACT:\n{decoded_content[:10000]}"],
+                    # SECURITY: XML tags quarantine the file content to prevent prompt injection
+                    contents=[f"INPUT DATA TO REFRACT:\n<raw_data>\n{decoded_content[:10000]}\n</raw_data>"],
                     system_prompt=REFRACTOR_SYSTEM_PROMPT,
                     config=types.GenerateContentConfig(
                         temperature=0.1, response_mime_type="application/json"
@@ -1758,7 +1759,8 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
                             active_cache_name = db_hash.replace("CACHE:", "")
                         else:
                             clean_payload = row[0].replace(f"[DORMANT ARTIFACT]: {latest_file}\n", "")
-                            active_file_context = f"\n[SYSTEM: TRANSIENT ARTIFACT CONTENT FOR CONTEXT - {latest_file}]\n{clean_payload}\n[END ARTIFACT CONTENT]\n"
+                            # SECURITY: Wrap in XML tags to prevent the AI from mistaking the file for system instructions
+                            active_file_context = f"\n[SYSTEM: TRANSIENT ARTIFACT CONTENT FOR CONTEXT - {latest_file}]\n<raw_artifact>\n{clean_payload}\n</raw_artifact>\n[END ARTIFACT CONTENT]\n"
             finally:
                 conn.close()
         # ------------------------------------------------
