@@ -1701,7 +1701,10 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
         file_stash_match = re.search(r'\[FILE_CONTENT:\s*(.*?)\]\s*\n(.*)', query, flags=re.DOTALL)
         if file_stash_match:
             stash_name = file_stash_match.group(1).strip()
-            stash_text = file_stash_match.group(2).strip()
+            
+            # [CRITICAL BUG FIX]: Scrub null bytes from the raw file text before DB insertion!
+            stash_text = file_stash_match.group(2).strip().replace('\x00', '')
+            
             stash_payload = f"[DORMANT ARTIFACT]: {stash_name}\n{stash_text}"
             
             # Default to standard DORMANT state
