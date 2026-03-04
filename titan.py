@@ -203,10 +203,12 @@ CHUNK_OVERLAP = 400
 
 
 def chunkText(text, size, overlap):
+    # SECURITY: Scrub null bytes that instantly crash PostgreSQL
+    safe_text = text.replace('\x00', '')
     chunks = []
     i = 0
-    while i < len(text):
-        chunks.append(text[i : i + size])
+    while i < len(safe_text):
+        chunks.append(safe_text[i : i + size])
         i += size - overlap
     return chunks
 
