@@ -174,19 +174,6 @@ JSON SCHEMA:
 }
 """
 
-# --- CLIENT INITIALIZATION ---
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-try:
-    if GEMINI_API_KEY:
-        GEMINI_CLIENT = genai.Client(api_key=GEMINI_API_KEY)
-        log("Gemini Client Initialized.")
-    else:
-        GEMINI_CLIENT = None
-        log_error("GEMINI_API_KEY missing. AI features disabled.")
-except Exception as e:
-    log_error(f"Gemini Init Failed: {e}")
-    GEMINI_CLIENT = None
-
 # --- CASCADE CONFIG ---
 # Primary: High-speed Experimental
 # Fallback: Stable Next-Gen (PhD-level reasoning)
@@ -220,7 +207,67 @@ def update_system_status(msg):
     CURRENT_SYSTEM_STATUS = msg
 
 
+# --- LOCAL NODE CONFIGURATION ---
+# Replace localhost with your secure tunnel URL if titan.py is hosted on DigitalOcean
+OLLAMA_LOCAL_URL = os.environ.get("OLLAMA_LOCAL_URL", "http://localhost:11434")
+OLLAMA_MODEL = "gemma4:e4b"
+
+class MockResponse:
+    """A wrapper to make Ollama's raw text output mimic the Gemini SDK response object."""
+    def __init__(self, text):
+        self.text = text
+
 def generate_with_fallback(client, contents, system_prompt=None, config=None):
+    # --- PHASE 1: LOCAL NODE (OLLAMA) ---
+    try:
+        log(f"TRANSMITTING TO LOCAL NODE: {OLLAMA_MODEL}...")
+        
+        # Format the messages for Ollama's API
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+            
+        if isinstance(contents, list):
+            for item in contents:
+                if isinstance(item, str):
+                    messages.append({"role": "user", "content": item})
+        else:
+            messages.append({"role": "user", "content": str(contents)})
+
+        # Safely extract temperature from whatever config format Gemini was using
+        temp = 0.7
+        if isinstance(config, dict):
+            temp = config.get("temperature", 0.7)
+        elif hasattr(config, "temperature") and config.temperature is not None:
+            temp = config.temperature
+
+        # Fire the request
+        response = requests.post(
+            f"{OLLAMA_LOCAL_URL}/api/chat",
+            json={
+                "model": OLLAMA_MODEL,
+                "messages": messages,
+                "stream": False,
+                "options": {
+                    "temperature": temp
+                }
+            },
+            timeout=300 # EXTREME TIMEOUT: Allows for system RAM offloading on 8GB VRAM cardsgives Gemma 4 plenty of time to "think"
+        )
+        
+        if response.status_code == 200:
+            res_data = response.json()
+            raw_text = res_data["message"]["content"]
+            log("LOCAL NODE SUCCESS: Signal processed via Gemma 4.")
+            return MockResponse(raw_text)
+        else:
+            log_error(f"Local Node returned HTTP {response.status_code}. Falling back to Cloud...")
+
+    except Exception as e:
+        log_error(f"Local Node Transmission Failure: {e}. Falling back to Cloud...")
+
+
+    # --- PHASE 2: CLOUD FALLBACK (GEMINI) ---
     # 1. Grab the key fresh from the OS environment
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
@@ -249,10 +296,9 @@ def generate_with_fallback(client, contents, system_prompt=None, config=None):
     # 5. The Transmission Loop
     for model_name in viable_cascade:
         try:
-            log(f"TRANSMITTING TO NODE: {model_name}...")
+            log(f"TRANSMITTING TO CLOUD NODE: {model_name}...")
 
             # Use a fresh client for this specific thread/call
-            # This bypasses any corrupted global client state
             fresh_client = genai.Client(api_key=api_key)
 
             response = fresh_client.models.generate_content(
@@ -1696,8 +1742,7 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
         history = payload.get("history", "")
         query = payload.get("memory_text", "")
 
-        # V5.8 DORMANT STASH: Silently cache uploaded files because Firebase won't keep them
-        # V5.8 SMART DORMANT STASH: Route to Cache or Standard Injection
+        # V5.8 DORMANT STASH: Silently cache uploaded files locally in Postgres
         file_stash_match = re.search(r'\[FILE_CONTENT:\s*(.*?)\]\s*\n(.*)', query, flags=re.DOTALL)
         if file_stash_match:
             stash_name = file_stash_match.group(1).strip()
@@ -1707,31 +1752,12 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
             
             stash_payload = f"[DORMANT ARTIFACT]: {stash_name}\n{stash_text}"
             
-            # Default to standard DORMANT state
+            # We enforce standard DORMANT state for everything now (No Google Caching)
             cache_marker = "DORMANT"
-            
-            # If the file is massive (roughly > 100k chars), attempt Gemini Caching
-            if len(stash_text) > 100000 and GEMINI_CLIENT:
-                log(f"Massive Artifact Detected. Attempting to build Gemini Context Cache for '{stash_name}'...")
-                try:
-                    # THE FIX: system_instruction must be defined when the cache is CREATED
-                    cache = GEMINI_CLIENT.caches.create(
-                        model='gemini-2.5-flash',
-                        config=types.CreateCachedContentConfig(
-                            system_instruction=TITAN_SYSTEM_PROMPT,
-                            contents=[stash_payload],
-                            ttl="3600s"
-                        ) 
-                    )
-                    cache_marker = f"CACHE:{cache.name}"
-                    log(f"Context Cache Activated: {cache.name}")
-                except Exception as e:
-                    log_error(f"Cache build failed (likely under 32k token minimum). Falling back to standard stash: {e}")
 
             conn = db.connect()
             try:
                 with conn.cursor() as stash_cur:
-                    # We store the Cache ID in the 'current_hash' column so we can find it later!
                     stash_cur.execute(
                         "INSERT INTO chronicles (weighted_score, created_at, memory_text, previous_hash, current_hash, is_active) VALUES (0, NOW(), %s, 'DORMANT', %s, FALSE);", 
                         (stash_payload, cache_marker)
@@ -1745,8 +1771,7 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
             # Clean the massive payload out of the active chat string so we don't send it twice!
             query = re.sub(r'\[FILE_CONTENT:.*?\]\s*\n.*', f'[FILE UPLOADED: {stash_name}]', query, flags=re.DOTALL)
 
-        # --- V5.8 DYNAMIC CONTEXT INJECTION & CACHE ROUTING ---
-        active_cache_name = None
+        # --- V5.8 DYNAMIC CONTEXT INJECTION & ROUTING ---
         active_file_context = ""
         full_chat_scope = f"{history}\n{query}"
         
@@ -1756,16 +1781,12 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
             conn = db.connect()
             try:
                 with conn.cursor() as cur:
-                    cur.execute("SELECT memory_text, current_hash FROM chronicles WHERE is_active = FALSE AND previous_hash = 'DORMANT' AND memory_text LIKE %s ORDER BY id DESC LIMIT 1", (f"[DORMANT ARTIFACT]: {latest_file}%",))
+                    cur.execute("SELECT memory_text FROM chronicles WHERE is_active = FALSE AND previous_hash = 'DORMANT' AND memory_text LIKE %s ORDER BY id DESC LIMIT 1", (f"[DORMANT ARTIFACT]: {latest_file}%",))
                     row = cur.fetchone()
                     if row:
-                        db_hash = row[1]
-                        if db_hash and db_hash.startswith("CACHE:"):
-                            active_cache_name = db_hash.replace("CACHE:", "")
-                        else:
-                            clean_payload = row[0].replace(f"[DORMANT ARTIFACT]: {latest_file}\n", "")
-                            # SECURITY: Wrap in XML tags to prevent the AI from mistaking the file for system instructions
-                            active_file_context = f"\n[SYSTEM: TRANSIENT ARTIFACT CONTENT FOR CONTEXT - {latest_file}]\n<raw_artifact>\n{clean_payload}\n</raw_artifact>\n[END ARTIFACT CONTENT]\n"
+                        clean_payload = row[0].replace(f"[DORMANT ARTIFACT]: {latest_file}\n", "")
+                        # SECURITY: Wrap in XML tags to prevent the AI from mistaking the file for system instructions
+                        active_file_context = f"\n[SYSTEM: TRANSIENT ARTIFACT CONTENT FOR CONTEXT - {latest_file}]\n<raw_artifact>\n{clean_payload}\n</raw_artifact>\n[END ARTIFACT CONTENT]\n"
             finally:
                 conn.close()
         # ------------------------------------------------
@@ -1774,27 +1795,13 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
         echo_prompt = f"\n\n[LITHOGRAPHIC ECHOES (ACTIVE MEMORIES)]:\n{echoes}" if echoes else ""
 
         try:
-            # Route 1: Massive File (Use Cheap Context Cache)
-            # Route 1: Massive File (Use Cheap Context Cache)
-            if active_cache_name and GEMINI_CLIENT:
-                log(f"Routing request through Gemini Context Cache: {active_cache_name}")
-                response = GEMINI_CLIENT.models.generate_content(
-                    model='gemini-2.5-flash',
-                    contents=[f"ARCHITECT: {query}{echo_prompt}"],
-                    config=types.GenerateContentConfig(
-                        temperature=0.7,
-                        # THE FIX: Remove system_instruction here, it is already baked into the cache!
-                        cached_content=active_cache_name
-                    )
-                )
-            # Route 2: Standard/Small File (Use Standard Injection)
-            else:
-                response = generate_with_fallback(
-                    GEMINI_CLIENT,
-                    contents=[f"{active_file_context}\nARCHITECT: {query}{echo_prompt}"],
-                    system_prompt=TITAN_SYSTEM_PROMPT,
-                    config=types.GenerateContentConfig(temperature=0.7),
-                )
+            # Unified Funnel: Routes through local Gemma 4 first via generate_with_fallback
+            response = generate_with_fallback(
+                GEMINI_CLIENT,
+                contents=[f"{active_file_context}\nARCHITECT: {query}{echo_prompt}"],
+                system_prompt=TITAN_SYSTEM_PROMPT,
+                config=types.GenerateContentConfig(temperature=0.7),
+            )
 
             ai_text = response.text
 
@@ -1813,7 +1820,6 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
                 commit_type = "memory" if protocol == "MEM_01" else "summary" if protocol == "SUM_02" else "file"
                 
                 # Logic to determine WHAT text to commit
-                # Logic to determine WHAT text to commit
                 if protocol == "MEM_01":
                     # PROTOCOL V5.8 DE-INCEPTION: Strip out raw file payloads, leave only the conversation
                     clean_history = re.sub(r'\[FILE_CONTENT:.*?(?=\n(?:user|bot|system):|\Z)', '[FILE ATTACHMENT REMOVED]', history, flags=re.DOTALL)
@@ -1824,8 +1830,6 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
                     full_context = f"{history}\nuser: {query}"
                     
                     # Find ALL file markers in the history/query
-                    # V5.8 STRICT REGEX: Catches the UI's [FILE: name] or the hidden [FILE_CONTENT: name] payload
-                    # The [^\]\|]+ part ensures it stops reading if it hits a closing bracket or a pipe (|) 
                     name_matches = re.findall(r'\[(?:FILE|FILE_CONTENT):\s*([^\]\|]+)', full_context, flags=re.IGNORECASE)
                     
                     if name_matches:
@@ -1843,23 +1847,13 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
                             conn = db.connect()
                             try:
                                 with conn.cursor() as fetch_cur:
-                                    fetch_cur.execute("SELECT id, memory_text, current_hash FROM chronicles WHERE is_active = FALSE AND previous_hash = 'DORMANT' AND memory_text LIKE %s ORDER BY id DESC LIMIT 1", (f"[DORMANT ARTIFACT]: {filename}%",))
+                                    fetch_cur.execute("SELECT id, memory_text FROM chronicles WHERE is_active = FALSE AND previous_hash = 'DORMANT' AND memory_text LIKE %s ORDER BY id DESC LIMIT 1", (f"[DORMANT ARTIFACT]: {filename}%",))
                                     row = fetch_cur.fetchone()
                                     if row:
                                         dormant_id = row[0]
                                         raw_file_text = row[1].replace(f"[DORMANT ARTIFACT]: {filename}\n", "")
-                                        db_hash = row[2]
                                         
-                                        # 1. PURGE GOOGLE CACHE (Stop the billing)
-                                        if db_hash and db_hash.startswith("CACHE:") and GEMINI_CLIENT:
-                                            cache_id = db_hash.replace("CACHE:", "")
-                                            try:
-                                                GEMINI_CLIENT.caches.delete(name=cache_id)
-                                                log(f"SECURITY: Gemini Context Cache '{cache_id}' obliterated.")
-                                            except Exception as e:
-                                                log_error(f"Failed to delete Google Cache: {e}")
-
-                                        # 2. PURGE POSTGRES STASH (Stop the bloat)
+                                        # PURGE POSTGRES STASH (Stop the bloat)
                                         fetch_cur.execute("DELETE FROM chronicles WHERE id = %s", (dormant_id,))
                                         conn.commit()
                                         log(f"SECURITY: Local Dormant Artifact '{filename}' purged after successful retrieval.")
@@ -1869,8 +1863,7 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
                             if raw_file_text:
                                 # WE FOUND IT. Delegate to the sequential background worker!
                                 background_tasks.add_task(background_shard_and_sync, filename, raw_file_text, score, token_cache)
-                                ai_text = re.sub(r'\[(?:FILE|MASTER FILE).*?\n?.*', '\n[ARTIFACT RECALLED FROM CACHE: SHARDING IN BACKGROUND]', ai_text, flags=re.DOTALL | re.IGNORECASE).strip()
-                                # THE FIX: Define commit_content for the success path so the thread doesn't crash
+                                ai_text = re.sub(r'\[(?:FILE|MASTER FILE).*?\n?.*', '\n[ARTIFACT RECALLED FROM STASH: SHARDING IN BACKGROUND]', ai_text, flags=re.DOTALL | re.IGNORECASE).strip()
                                 commit_content = f"[SYSTEM LOG]: Protocol FILE_03 delegated. '{filename}' retrieved from Dormant Cache and passed to Weaver."
                             else:
                                 commit_content = f"[SYSTEM LOG]: FILE_03 triggered, but '{filename}' was missing from the Dormant Cache."
@@ -1916,8 +1909,6 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
                 )
             log_error(f"Chat Error: {e}")
             return {"status": "FAILURE", "error": str(e)}
-
-    return {"status": "INVALID_ACTION"}
 
 
 if __name__ == "__main__":
