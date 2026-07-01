@@ -10,8 +10,7 @@ import requests
 import time
 import threading
 import cortex
-from google import genai
-from google.genai import types
+
 from datetime import datetime
 from fastapi import FastAPI, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -217,42 +216,30 @@ class MockResponse:
     def __init__(self, text):
         self.text = text
 
-def generate_with_fallback(client, contents, system_prompt=None, config=None):
-    # --- PHASE 1: LOCAL NODE (OLLAMA) ---
+def generate_with_fallback(contents, system_prompt=None, temperature=0.7):
+    # --- LOCAL NODE (OLLAMA) ---
     try:
         log(f"TRANSMITTING TO LOCAL NODE: {OLLAMA_MODEL}...")
         
-        # Format the messages for Ollama's API
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
             
         if isinstance(contents, list):
             for item in contents:
-                if isinstance(item, str):
-                    messages.append({"role": "user", "content": item})
+                messages.append({"role": "user", "content": str(item)})
         else:
             messages.append({"role": "user", "content": str(contents)})
 
-        # Safely extract temperature from whatever config format Gemini was using
-        temp = 0.7
-        if isinstance(config, dict):
-            temp = config.get("temperature", 0.7)
-        elif hasattr(config, "temperature") and config.temperature is not None:
-            temp = config.temperature
-
-        # Fire the request
         response = requests.post(
             f"{OLLAMA_LOCAL_URL}/api/chat",
             json={
                 "model": OLLAMA_MODEL,
                 "messages": messages,
                 "stream": False,
-                "options": {
-                    "temperature": temp
-                }
+                "options": {"temperature": temperature}
             },
-            timeout=300 # EXTREME TIMEOUT: Allows for system RAM offloading on 8GB VRAM cardsgives Gemma 4 plenty of time to "think"
+            timeout=300
         )
         
         if response.status_code == 200:
@@ -261,67 +248,12 @@ def generate_with_fallback(client, contents, system_prompt=None, config=None):
             log("LOCAL NODE SUCCESS: Signal processed via Gemma 4.")
             return MockResponse(raw_text)
         else:
-            log_error(f"Local Node returned HTTP {response.status_code}. Falling back to Cloud...")
+            log_error(f"Local Node returned HTTP {response.status_code}.")
+            return None
 
     except Exception as e:
-        log_error(f"Local Node Transmission Failure: {e}. Falling back to Cloud...")
-
-
-    # --- PHASE 2: CLOUD FALLBACK (GEMINI) ---
-    # 1. Grab the key fresh from the OS environment
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        log_error("CRITICAL: GEMINI_API_KEY not found in environment.")
+        log_error(f"Local Node Transmission Failure: {e}")
         return None
-
-    # 2. Rebuild the config to ensure no "helpful" ghosts are hiding in it
-    if isinstance(config, types.GenerateContentConfig):
-        actual_config = config
-    elif isinstance(config, dict):
-        actual_config = types.GenerateContentConfig(**config)
-    else:
-        actual_config = types.GenerateContentConfig()
-
-    # 3. Force the system prompt into the required SDK object format
-    if system_prompt and isinstance(system_prompt, str):
-        actual_config.system_instruction = types.Content(
-            parts=[types.Part(text=system_prompt)]
-        )
-
-    # 4. Filter for viable models
-    viable_cascade = [m for m in MODEL_CASCADE if SHIELD.is_viable(m)]
-    if not viable_cascade:
-        raise Exception("Titan Shield: All signal paths are locked.")
-
-    # 5. The Transmission Loop
-    for model_name in viable_cascade:
-        try:
-            log(f"TRANSMITTING TO CLOUD NODE: {model_name}...")
-
-            # Use a fresh client for this specific thread/call
-            fresh_client = genai.Client(api_key=api_key)
-
-            response = fresh_client.models.generate_content(
-                model=model_name, contents=contents, config=actual_config
-            )
-            return response
-
-        except Exception as e:
-            err_str = str(e).upper()
-            log_error(f"Signal Collision on {model_name}: {e}")
-
-            # Handle Quota/Timeout but raise the 400s
-            if any(code in err_str for code in ["429", "RESOURCE_EXHAUSTED"]):
-                SHIELD.mark_exhausted(model_name)
-                continue
-            elif any(code in err_str for code in ["503", "500", "TIMEOUT"]):
-                SHIELD.mark_temporary_fail(model_name)
-                continue
-            else:
-                # If we still hit 400 here, it might be a transient auth issue
-                if "API KEY" in err_str or "INVALID_ARGUMENT" in err_str:
-                    log_error(f"🚨 AUTH SIGNAL FRAGMENTED: {e}")
-                raise e
 
 
 # --- UTILITIES ---
@@ -452,7 +384,7 @@ class DBManager:
                 conn.close()
 
     def commit_lithograph(
-        self, previous_hash, raw_text, client, token_cache, manual_score=None
+        self, previous_hash, raw_text, token_cache, manual_score=None
     ):
         log(
             f"DEBUG: Attempting Supabase connect with string: {self.connection_string[:20]}..."
@@ -466,17 +398,22 @@ class DBManager:
 
             if manual_score:
                 score = int(manual_score)
-            elif client:
+            else:
+                # No longer need 'client'. Just call the function directly.
                 try:
                     scoring_res = generate_with_fallback(
-                        client,
                         contents=[f"MEMORY TO SCORE:\n{raw_text[:5000]}"],
                         system_prompt=SCORING_SYSTEM_PROMPT,
+                        temperature=0.1
                     )
-                    score_match = re.search(r"SCORE:\s*(\d+)", scoring_res.text)
-                    if score_match:
-                        score = int(score_match.group(1))
-                except:
+                    # Add a check in case the local node fails and returns None
+                    if scoring_res and scoring_res.text:
+                        score_match = re.search(r"SCORE:\s*(\d+)", scoring_res.text)
+                        if score_match:
+                            score = int(score_match.group(1))
+                except Exception as e:
+                    log_error(f"Scoring error: {e}")
+                    # Keep default score 5 if scoring fails
                     pass
 
             conn = self.connect()
@@ -873,16 +810,11 @@ class WeaverManager:
         )
 
         try:
-            # 3. Call Gemini
             res = generate_with_fallback(
-                GEMINI_CLIENT,
                 contents=[prompt],
                 system_prompt=WEAVER_SYSTEM_PROMPT,
-                config=types.GenerateContentConfig(
-                    temperature=0.1, response_mime_type="application/json"
-                ),
+                temperature=0.1
             )
-
             raw = res.text.strip()
 
             # --- DEBUG: LOG THE RAW JSON ---
@@ -1071,131 +1003,82 @@ def create_manual_lithograph(text, score=5):
 
 
 # Change default litho_id from 0 to None to prevent FK Constraint errors
-def process_hologram_sync(
-    content_to_save: str,
-    litho_id: int = None,
-    gate_threshold: int = 5,
-    override_score=None,
-):
-    global GEMINI_CLIENT
+def process_hologram_sync(content_to_save, litho_id=None, gate_threshold=5, override_score=None):
+    if litho_id == 0: litho_id = None
+    
+    db = DBManager()
+    token_cache = db.load_token_cache()
+    decoded_content = decode_memory(content_to_save, token_cache)
 
-    # Handle the case where 0 might be passed explicitly
-    if litho_id == 0:
-        litho_id = None
+    # Refraction Call
+    refraction = generate_with_fallback(
+        contents=[f"INPUT DATA TO REFRACT:\n<raw_data>\n{decoded_content[:10000]}\n</raw_data>"],
+        system_prompt=REFRACTOR_SYSTEM_PROMPT,
+        temperature=0.1
+    )
 
-    log(f"Starting SYNC Refraction for Litho ID: {litho_id if litho_id else 'Manual'}")
-    synapse_count = 0
+    # --- 3. PACKET CONSTRUCTION ---
+    packet = {}
 
-    # --- 1. PRESERVATION PROTOCOL (Safety Net) ---
-    if override_score is not None:
-        final_score = int(override_score)
-        log(f"⚡ PILOT OVERRIDE ACTIVE: Score fixed at {final_score}")
+    if refraction and hasattr(refraction, "text"):
+        try:
+            packet = json.loads(refraction.text.strip())
+            if override_score is None:
+                final_score = int(packet.get("weighted_score", 5))
+        except:
+            final_score = 5
+            log("⚠️ Malformed Refraction JSON. Using Survival Packet.")
+
+    # FORCE THE SCORE
+    packet["weighted_score"] = final_score
+
+    # Fill missing keys for Survival Mode
+    if "keywords" not in packet:
+        packet["keywords"] = []
+    if "mythos" not in packet:
+        packet["mythos"] = "Raw Input"
+    if "pathos" not in packet:
+        packet["pathos"] = {"status": "Unprocessed"}
+    if "logos" not in packet:
+        packet["logos"] = (
+            decoded_content if "decoded_content" in locals() else content_to_save
+        )
+
+    # --- 4. THE GATEKEEPER ---
+    if final_score < gate_threshold and override_score is None:
+        log(
+            f"⚠️ GATE ACTIVE: Score {final_score} < {gate_threshold}. Skipping Weave."
+        )
+        return 0
+
+    # --- 5. COMMIT & WEAVE ---
+    holo_manager = HolographicManager()
+
+    # Save the node to Postgres
+    res = holo_manager.commit_hologram(packet, litho_id)
+
+    # [CRITICAL FIX] Log the error if commit fails!
+    if res.get("status") == "SUCCESS":
+        new_hid = res.get("hologram_id")
+        depth = 5 if final_score >= 8 else 3 if final_score >= 5 else 1
+        keywords = packet.get("keywords") or []
+
+        db_for_weaver = db if "db" in locals() else DBManager()
+        weaver = WeaverManager(db_for_weaver)
+
+        synapse_count = weaver.weave(
+            new_hid, packet["logos"], keywords, depth=depth
+        )
+        return synapse_count
     else:
-        final_score = 5
-
-    try:
-        # Check client availability & Re-init if needed (Thread Safety)
-        if not GEMINI_CLIENT:
-            log("⚠️ Gemini Client missing in sync task. Attempting recovery...")
-            k = os.environ.get("GEMINI_API_KEY")
-            if k:
-                try:
-                    GEMINI_CLIENT = genai.Client(api_key=k)
-                    log("✅ Gemini Client Recovered.")
-                except:
-                    log_error("❌ Recovery Failed.")
-
-        if not GEMINI_CLIENT:
-            log("⚠️ Gemini Client still missing. Running Preservation Protocol.")
-            refraction = None
-        else:
-            db = DBManager()
-            token_cache = db.load_token_cache()
-            decoded_content = decode_memory(content_to_save, token_cache)
-
-            # --- 2. REFRACTION (The Analysis) ---
-            try:
-                refraction = generate_with_fallback(
-                    GEMINI_CLIENT,
-                    # SECURITY: XML tags quarantine the file content to prevent prompt injection
-                    contents=[f"INPUT DATA TO REFRACT:\n<raw_data>\n{decoded_content[:10000]}\n</raw_data>"],
-                    system_prompt=REFRACTOR_SYSTEM_PROMPT,
-                    config=types.GenerateContentConfig(
-                        temperature=0.1, response_mime_type="application/json"
-                    ),
-                )
-            except Exception as e:
-                log_error(f"Refraction Error: {e}")
-                refraction = None
-
-        # --- 3. PACKET CONSTRUCTION ---
-        packet = {}
-
-        if refraction and hasattr(refraction, "text"):
-            try:
-                packet = json.loads(refraction.text.strip())
-                if override_score is None:
-                    final_score = int(packet.get("weighted_score", 5))
-            except:
-                log("⚠️ Malformed Refraction JSON. Using Survival Packet.")
-
-        # FORCE THE SCORE
-        packet["weighted_score"] = final_score
-
-        # Fill missing keys for Survival Mode
-        if "keywords" not in packet:
-            packet["keywords"] = []
-        if "mythos" not in packet:
-            packet["mythos"] = "Raw Input"
-        if "pathos" not in packet:
-            packet["pathos"] = {"status": "Unprocessed"}
-        if "logos" not in packet:
-            packet["logos"] = (
-                decoded_content if "decoded_content" in locals() else content_to_save
-            )
-
-        # --- 4. THE GATEKEEPER ---
-        if final_score < gate_threshold and override_score is None:
-            log(
-                f"⚠️ GATE ACTIVE: Score {final_score} < {gate_threshold}. Skipping Weave."
-            )
-            return 0
-
-        # --- 5. COMMIT & WEAVE ---
-        holo_manager = HolographicManager()
-
-        # Save the node to Postgres
-        res = holo_manager.commit_hologram(packet, litho_id)
-
-        # [CRITICAL FIX] Log the error if commit fails!
-        if res.get("status") == "SUCCESS":
-            new_hid = res.get("hologram_id")
-            depth = 5 if final_score >= 8 else 3 if final_score >= 5 else 1
-            keywords = packet.get("keywords") or []
-
-            db_for_weaver = db if "db" in locals() else DBManager()
-            weaver = WeaverManager(db_for_weaver)
-
-            synapse_count = weaver.weave(
-                new_hid, packet["logos"], keywords, depth=depth
-            )
-            return synapse_count
-        else:
-            # THIS WAS MISSING: Tell us why the DB rejected it
-            log_error(f"❌ DB Commit Failed: {res.get('error')}")
-            return 0
-
-    except Exception as e:
-        log_error(f"❌ Critical Sync Failure for ID {litho_id}: {e}")
+        # THIS WAS MISSING: Tell us why the DB rejected it
+        log_error(f"❌ DB Commit Failed: {res.get('error')}")
         return 0
 
 
 def process_retro_weave_sync(content_to_save: str, hologram_id: str):
     log(f"Starting SYNC Retro-Weave for Hologram ID: {hologram_id}")
     try:
-        if not GEMINI_CLIENT:
-            return 0
-
         # DIRECT TO WEAVER: Skip keyword generation.
         # The Weaver's 'find_candidates' method ignores keywords anyway
         # and defaults to the most recent chronologically.
@@ -1231,7 +1114,6 @@ def background_shard_and_sync(filename: str, raw_file_text: str, score: int, tok
         shard_res = db.commit_lithograph(
             db.get_latest_hash(),
             chunk_header,
-            GEMINI_CLIENT,
             token_cache,
             manual_score=score
         )
@@ -1239,13 +1121,13 @@ def background_shard_and_sync(filename: str, raw_file_text: str, score: int, tok
         if shard_res["status"] == "SUCCESS":
             process_hologram_sync(chunk_header, shard_res["litho_id"], 5, score)
         
-        # The Magic Throttle: Protects Postgres DB Pool & Gemini API from exploding
+        # The Magic Throttle: Protects Postgres DB Pool from exploding
         time.sleep(1.5) 
         
     # 2. Process Master Archive last
     update_system_status(f"Finalizing Master Archive for '{filename}'...")
     master_payload = f"[MASTER FILE ARCHIVE]: {filename}\n{raw_file_text}"
-    res = db.commit_lithograph(db.get_latest_hash(), master_payload, GEMINI_CLIENT, token_cache, manual_score=score)
+    res = db.commit_lithograph(db.get_latest_hash(), master_payload, token_cache, manual_score=score)
     if res["status"] == "SUCCESS":
         process_hologram_sync(master_payload, res["litho_id"], 5, score)
         
@@ -1549,14 +1431,10 @@ async def create_session_anchor(request: Request):
     try:
         # 2. Generate the Anchor Data
         response = generate_with_fallback(
-            GEMINI_CLIENT,
             contents=[f"CONVERSATION LOG:\n{history[-8000:]}"],
             system_prompt=system_prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.2, response_mime_type="application/json"
-            ),
+            temperature=0.1
         )
-
         data = json.loads(response.text)
         new_id = str(uuid.uuid4())  # The Shared Key
 
@@ -1677,7 +1555,6 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
         res = db.commit_lithograph(
             db.get_latest_hash(),
             payload.get("memory_text", ""),
-            GEMINI_CLIENT,
             token_cache,
             manual_score=payload.get("override_score"),
         )
@@ -1797,12 +1674,10 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
         try:
             # Unified Funnel: Routes through local Gemma 4 first via generate_with_fallback
             response = generate_with_fallback(
-                GEMINI_CLIENT,
                 contents=[f"{active_file_context}\nARCHITECT: {query}{echo_prompt}"],
                 system_prompt=TITAN_SYSTEM_PROMPT,
-                config=types.GenerateContentConfig(temperature=0.7),
+                temperature=0.7
             )
-
             ai_text = response.text
 
             # --- CODED PROTOCOL SECURITY LAYER (V5.8) ---
@@ -1879,7 +1754,6 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
                 res = db.commit_lithograph(
                     db.get_latest_hash(),
                     commit_content,
-                    GEMINI_CLIENT,
                     token_cache,
                     manual_score=score
                 )
