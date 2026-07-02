@@ -231,6 +231,14 @@ def generate_with_fallback(contents, system_prompt=None, temperature=0.7):
         else:
             messages.append({"role": "user", "content": str(contents)})
 
+        # 1. These headers satisfy the Cloudflare Access gate you've enabled
+        headers = {
+            "CF-Access-Client-Id": os.environ.get("CF_CLIENT_ID"),
+            "CF-Access-Client-Secret": os.environ.get("CF_CLIENT_SECRET"),
+            "Content-Type": "application/json"
+        }
+
+        # 2. This request will now pass the Access gate AND use streaming to avoid 524s
         response = requests.post(
             f"{OLLAMA_LOCAL_URL}/api/chat",
             json={
@@ -239,21 +247,19 @@ def generate_with_fallback(contents, system_prompt=None, temperature=0.7):
                 "stream": True,
                 "options": {"temperature": temperature}
             },
-            timeout=300
+            headers=headers,
+            timeout=300,
             stream=True
         )
         
         if response.status_code == 200:
             full_text = ""
-            # Iterate through the stream line by line
+            # 3. This loop drains the stream, keeping the connection alive
             for line in response.iter_lines():
                 if line:
                     res_data = json.loads(line)
-                    # The message content comes in chunks
-                    chunk = res_data.get("message", {}).get("content", "")
-                    full_text += chunk
+                    full_text += res_data.get("message", {}).get("content", "")
             
-            log("LOCAL NODE SUCCESS: Signal processed via stream.")
             return MockResponse(full_text)
         else:
             log_error(f"Local Node returned HTTP {response.status_code}.")
