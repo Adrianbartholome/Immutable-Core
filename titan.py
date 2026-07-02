@@ -187,6 +187,8 @@ CURRENT_SYSTEM_STATUS = "System Ready."
 CHUNK_SIZE = 2000
 CHUNK_OVERLAP = 400
 
+INJECTED_FILE_CACHE = {"last_file": None}
+
 
 def chunkText(text, size, overlap):
     # SECURITY: Scrub null bytes that instantly crash PostgreSQL
@@ -1669,18 +1671,27 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
         file_mentions = re.findall(r'\[FILE:\s*([^\]]+)\]', full_chat_scope, flags=re.IGNORECASE)
         if file_mentions:
             latest_file = file_mentions[-1].strip()
-            conn = db.connect()
-            try:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT memory_text FROM chronicles WHERE is_active = FALSE AND previous_hash = 'DORMANT' AND memory_text LIKE %s ORDER BY id DESC LIMIT 1", (f"[DORMANT ARTIFACT]: {latest_file}%",))
-                    row = cur.fetchone()
-                    if row:
-                        clean_payload = row[0].replace(f"[DORMANT ARTIFACT]: {latest_file}\n", "")
-                        # SECURITY: Wrap in XML tags to prevent the AI from mistaking the file for system instructions
-                        active_file_context = f"\n[SYSTEM: TRANSIENT ARTIFACT CONTENT FOR CONTEXT - {latest_file}]\n<raw_artifact>\n{clean_payload}\n</raw_artifact>\n[END ARTIFACT CONTENT]\n"
-            finally:
-                conn.close()
-        # ------------------------------------------------
+
+            if INJECTED_FILE_CACHE.get("last_file") == latest_file:
+                active_file_context = f"\n[SYSTEM: File '{latest_file}' already in context.]\n"
+            else:
+                # Perform the lookup
+                conn = db.connect()
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT memory_text FROM chronicles WHERE is_active = FALSE AND previous_hash = 'DORMANT' AND memory_text LIKE %s ORDER BY id DESC LIMIT 1", (f"[DORMANT ARTIFACT]: {latest_file}%",))
+                        row = cur.fetchone()
+                        if row:
+                            clean_payload = row[0].replace(f"[DORMANT ARTIFACT]: {latest_file}\n", "")
+                            truncated_payload = clean_payload[:1000] + "\n...[TRUNCATED]..."
+                            active_file_context = f"\n[SYSTEM: TRANSIENT ARTIFACT - {latest_file}]\n<raw_artifact>\n{truncated_payload}\n</raw_artifact>\n"
+                            
+                            # ONLY update the cache once we know the file exists in the DB
+                            INJECTED_FILE_CACHE["last_file"] = latest_file
+                        else:
+                            active_file_context = f"\n[SYSTEM: Error - File '{latest_file}' not found in Dormant Cache.]\n"
+                finally:
+                    conn.close()
 
         echoes = get_core_echoes(limit=3)
         echo_prompt = f"\n\n[LITHOGRAPHIC ECHOES (ACTIVE MEMORIES)]:\n{echoes}" if echoes else ""
