@@ -816,7 +816,7 @@ class WeaverManager:
             valid_candidates[label] = str(old_hid)
 
             decoded_old_text = decode_memory(old_text, token_cache)
-            candidate_block += f"\n--- {label} ---\n{decoded_old_text[:500]}\n"
+            candidate_block += f"\n--- {label} ---\n{decoded_old_text[:300]}\n"
 
         if not valid_candidates:
             return 0
@@ -831,6 +831,11 @@ class WeaverManager:
                 system_prompt=WEAVER_SYSTEM_PROMPT,
                 temperature=0.1
             )
+
+            if res is None:
+                log("WEAVER: LLM Timed out (524). Skipping this weave operation.")
+                return 0
+            
             raw = res.text.strip()
 
             # --- DEBUG: LOG THE RAW JSON ---
