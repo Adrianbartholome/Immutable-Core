@@ -1018,7 +1018,6 @@ def create_manual_lithograph(text, score=5):
 # --- Updated Refraction Sync with Significance Gate ---
 
 
-# Change default litho_id from 0 to None to prevent FK Constraint errors
 def process_hologram_sync(content_to_save, litho_id=None, gate_threshold=5, override_score=None):
     if litho_id == 0: litho_id = None
     
@@ -1026,25 +1025,25 @@ def process_hologram_sync(content_to_save, litho_id=None, gate_threshold=5, over
     token_cache = db.load_token_cache()
     decoded_content = decode_memory(content_to_save, token_cache)
 
-    # Refraction Call
+    # 1. INITIALIZE VARIABLES (This fixes the regression)
+    final_score = 5
+    packet = {}
+
+    # 2. Refraction Call
     refraction = generate_with_fallback(
         contents=[f"INPUT DATA TO REFRACT:\n<raw_data>\n{decoded_content[:10000]}\n</raw_data>"],
         system_prompt=REFRACTOR_SYSTEM_PROMPT,
         temperature=0.1
     )
 
-    # --- 3. PACKET CONSTRUCTION ---
-    packet = {}
-
+    # 3. Process refraction only if it succeeded
     if refraction and hasattr(refraction, "text"):
         raw_text = refraction.text.strip()
         
-        # 1. Strip out markdown code blocks if the model insists on using them
+        # Scrubber logic
         if "```" in raw_text:
             raw_text = re.sub(r"```json\s*|\s*```", "", raw_text, flags=re.IGNORECASE)
         
-        # 2. Extract only the JSON part if there is conversational filler
-        # (This looks for the first '{' and the last '}')
         start_brace = raw_text.find('{')
         end_brace = raw_text.rfind('}')
         if start_brace != -1 and end_brace != -1:
@@ -1055,55 +1054,36 @@ def process_hologram_sync(content_to_save, litho_id=None, gate_threshold=5, over
             if override_score is None:
                 final_score = int(packet.get("weighted_score", 5))
         except Exception as e:
-            # We log the raw output so you can see exactly what the model returned 
-            # if this still fails.
             log_error(f"⚠️ JSON PARSE FAILED. Raw Output: {raw_text}") 
             final_score = 5
-            log("⚠️ Malformed Refraction JSON. Using Survival Packet.")
 
-    # FORCE THE SCORE
+    # 4. GUARANTEED ASSIGNMENT
     packet["weighted_score"] = final_score
 
     # Fill missing keys for Survival Mode
-    if "keywords" not in packet:
-        packet["keywords"] = []
-    if "mythos" not in packet:
-        packet["mythos"] = "Raw Input"
-    if "pathos" not in packet:
-        packet["pathos"] = {"status": "Unprocessed"}
-    if "logos" not in packet:
-        packet["logos"] = (
-            decoded_content if "decoded_content" in locals() else content_to_save
-        )
+    if "keywords" not in packet: packet["keywords"] = []
+    if "mythos" not in packet: packet["mythos"] = "Raw Input"
+    if "pathos" not in packet: packet["pathos"] = {"status": "Unprocessed"}
+    if "logos" not in packet: packet["logos"] = decoded_content
 
-    # --- 4. THE GATEKEEPER ---
+    # 5. THE GATEKEEPER
     if final_score < gate_threshold and override_score is None:
-        log(
-            f"⚠️ GATE ACTIVE: Score {final_score} < {gate_threshold}. Skipping Weave."
-        )
+        log(f"⚠️ GATE ACTIVE: Score {final_score} < {gate_threshold}. Skipping Weave.")
         return 0
 
-    # --- 5. COMMIT & WEAVE ---
+    # 6. COMMIT & WEAVE
     holo_manager = HolographicManager()
-
-    # Save the node to Postgres
     res = holo_manager.commit_hologram(packet, litho_id)
 
-    # [CRITICAL FIX] Log the error if commit fails!
     if res.get("status") == "SUCCESS":
         new_hid = res.get("hologram_id")
         depth = 5 if final_score >= 8 else 3 if final_score >= 5 else 1
         keywords = packet.get("keywords") or []
-
         db_for_weaver = db if "db" in locals() else DBManager()
         weaver = WeaverManager(db_for_weaver)
-
-        synapse_count = weaver.weave(
-            new_hid, packet["logos"], keywords, depth=depth
-        )
+        synapse_count = weaver.weave(new_hid, packet["logos"], keywords, depth=depth)
         return synapse_count
     else:
-        # THIS WAS MISSING: Tell us why the DB rejected it
         log_error(f"❌ DB Commit Failed: {res.get('error')}")
         return 0
 
