@@ -11,7 +11,7 @@ import time
 import threading
 import cortex
 
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi import FastAPI, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -433,7 +433,7 @@ class DBManager:
                     pass
 
             conn = self.connect()
-            now = datetime.now()
+            now = datetime.now(timezone.utc)
             current_hash = generate_hash(
                 {"timestamp": now, "weighted_score": score, "memory_text": compressed},
                 previous_hash,
@@ -665,7 +665,7 @@ class DBManager:
                 deleted_count = cur.rowcount
                 log(f"REHASH: Deep purge complete. Destroyed {deleted_count} root records.")
 
-            now = datetime.now()
+            now = datetime.now(timezone.utc)
             marker_text = f"[SYSTEM EVENT]: Global Rehash Initiated. Reason: {reason_note}"
             cur.execute(
                 "INSERT INTO chronicles (weighted_score, created_at, memory_text, previous_hash, current_hash, is_active) VALUES (9, %s, %s, 'PENDING', 'PENDING', TRUE);",
@@ -1037,11 +1037,27 @@ def process_hologram_sync(content_to_save, litho_id=None, gate_threshold=5, over
     packet = {}
 
     if refraction and hasattr(refraction, "text"):
+        raw_text = refraction.text.strip()
+        
+        # 1. Strip out markdown code blocks if the model insists on using them
+        if "```" in raw_text:
+            raw_text = re.sub(r"```json\s*|\s*```", "", raw_text, flags=re.IGNORECASE)
+        
+        # 2. Extract only the JSON part if there is conversational filler
+        # (This looks for the first '{' and the last '}')
+        start_brace = raw_text.find('{')
+        end_brace = raw_text.rfind('}')
+        if start_brace != -1 and end_brace != -1:
+            raw_text = raw_text[start_brace:end_brace+1]
+
         try:
-            packet = json.loads(refraction.text.strip())
+            packet = json.loads(raw_text)
             if override_score is None:
                 final_score = int(packet.get("weighted_score", 5))
-        except:
+        except Exception as e:
+            # We log the raw output so you can see exactly what the model returned 
+            # if this still fails.
+            log_error(f"⚠️ JSON PARSE FAILED. Raw Output: {raw_text}") 
             final_score = 5
             log("⚠️ Malformed Refraction JSON. Using Survival Packet.")
 
