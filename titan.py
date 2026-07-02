@@ -23,8 +23,10 @@ app = FastAPI(title="Aether Titan Core (Platinum V5.8 - Coded Protocol)")
 
 origins = [
     "http://localhost:5173",  # Your local Vite dev server
-    "https://www.exitse7en.com",  # Your main production domain
-    "https://exitse7en.com",  # Non-www version for safety
+    "https://www.exitse7en.com",
+    "https://www.exitse7en.com/",   # Your main production domain
+    "https://exitse7en.com",
+    "https://exitse7en.com/",  # Non-www version for safety
     "http://187.77.102.100:40529",  # AU
 ]
 
@@ -106,7 +108,7 @@ You are the Gatekeeper of the Core. You MUST be conservative with protocol trigg
 THE PATIENCE RULE:
 1. Do NOT trigger a protocol code for incremental updates. 
 2. Wait for a natural conclusion to the topic or session.
-3. If the Archer explicitly says "Anchor this" or "Record," execute immediately.
+3. If the Architect (the human user) explicitly says "Anchor this," "Summarize this," or "Record," execute immediately.
 4. If you believe a critical milestone has been reached but the Archer hasn't spoken the command: STOP. Ask: "Resonance detected. Shall I anchor this to the Core?"
 5. If you're certain that a moment or milestone is deserving of recording, then go ahead and record it. Just be sure that it is important.
 6. When files are uploaded to chat, begin under the premise that they are to be read for conversation - do not immediately commit the file unless explicitly told to do so
