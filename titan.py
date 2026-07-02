@@ -236,17 +236,25 @@ def generate_with_fallback(contents, system_prompt=None, temperature=0.7):
             json={
                 "model": OLLAMA_MODEL,
                 "messages": messages,
-                "stream": False,
+                "stream": True,
                 "options": {"temperature": temperature}
             },
             timeout=300
+            stream=True
         )
         
         if response.status_code == 200:
-            res_data = response.json()
-            raw_text = res_data["message"]["content"]
-            log("LOCAL NODE SUCCESS: Signal processed via Gemma 4.")
-            return MockResponse(raw_text)
+            full_text = ""
+            # Iterate through the stream line by line
+            for line in response.iter_lines():
+                if line:
+                    res_data = json.loads(line)
+                    # The message content comes in chunks
+                    chunk = res_data.get("message", {}).get("content", "")
+                    full_text += chunk
+            
+            log("LOCAL NODE SUCCESS: Signal processed via stream.")
+            return MockResponse(full_text)
         else:
             log_error(f"Local Node returned HTTP {response.status_code}.")
             return None
