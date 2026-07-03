@@ -1236,14 +1236,13 @@ def get_shield_status():
 @app.post("/admin/shield/toggle_3")
 def toggle_gemini_3():
     """Manually forces the cascade to stay on Gemini 3 or reverts to Auto."""
-    if SHIELD.forced_model == "gemini-3-flash-preview":
-        SHIELD.forced_model = None
-        log("TITAN SHIELD: Reverted to Auto-Cascade.")
-        return {"status": "AUTO", "model": "gemini-2.5-flash"}
-    else:
-        SHIELD.forced_model = "gemini-3-flash-preview"
-        log("TITAN SHIELD: Manually locked to Gemini 3.")
-        return {"status": "FORCED", "model": "gemini-3-flash-preview"}
+    # Temporarily disabled per Architect's directive. 
+    # Logic remains in place for future model-swapping expansion.
+    return {
+        "status": "DISABLED", 
+        "message": "Model toggling currently inactive.",
+        "active_model": "gemini-2.5-flash"
+    }
 
 
 @app.get("/graph")
