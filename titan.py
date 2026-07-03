@@ -1393,6 +1393,48 @@ def get_neural_synapses():
     finally:
         conn.close()
 
+@app.get("/chronicle/{chronicle_id}")
+def fetch_chronicle(chronicle_id: str):
+    """
+    Fetches a specific chronicle by ID for the Ref-Link system.
+    Decodes the memory using the current token cache.
+    """
+    db = DBManager()
+    token_cache = db.load_token_cache()
+    conn = None
+    
+    try:
+        conn = db.connect()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, memory_text, created_at FROM chronicles WHERE id = %s AND is_active = TRUE;",
+                (chronicle_id,)
+            )
+            row = cur.fetchone()
+            
+            if not row:
+                return JSONResponse(status_code=404, content={"status": "FAILURE", "error": "Chronicle not found"})
+            
+            # Decode the content
+            decoded_text = decode_memory(row[1], token_cache)
+            
+            return {
+                "status": "SUCCESS",
+                "data": {
+                    "id": row[0],
+                    "content": decoded_text,
+                    "timestamp": row[2].isoformat()
+                }
+            }
+            
+    except Exception as e:
+        log_error(f"Chronicle Fetch Error: {e}")
+        return JSONResponse(status_code=500, content={"status": "FAILURE", "error": str(e)})
+        
+    finally:
+        if conn:
+            conn.close()
+
 @app.post("/admin/recalculate_map")
 def recalculate_cortex_map(req: RemapRequest, background_tasks: BackgroundTasks):
     """Triggers the physics engine to regenerate spatial coordinates."""
