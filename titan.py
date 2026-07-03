@@ -1454,12 +1454,39 @@ async def create_session_anchor(request: Request):
             system_prompt=system_prompt,
             temperature=0.1
         )
-        data = json.loads(response.text)
-        new_id = str(uuid.uuid4())  # The Shared Key
 
-        # 3. The 4-Part Atomic Write
+        # 1. CRITICAL CHECK: Did we get a response?
+        if not response or not response.text:
+            log_error("Anchor generation returned empty response.")
+            return {"status": "FAILURE", "error": "LLM returned empty response."}
+
+        raw_text = response.text.strip()
+        
+        # 2. SCRUBBING: Remove markdown backticks if present
+        if "```" in raw_text:
+            raw_text = re.sub(r"```json\s*|\s*```", "", raw_text, flags=re.IGNORECASE)
+        
+        # 3. EXTRACTION: Find the first '{' and last '}'
+        start_brace = raw_text.find('{')
+        end_brace = raw_text.rfind('}')
+        if start_brace != -1 and end_brace != -1:
+            raw_text = raw_text[start_brace:end_brace+1]
+        
+        # 4. NOW PARSE
+        data = json.loads(raw_text)
+        
+        # --- ADD THIS SANITY CHECK ---
+        required_keys = ["chronos", "logos", "pathos", "mythos", "ethos", "synthesis"]
+        for key in required_keys:
+            if key not in data:
+                raise ValueError(f"Missing required key in LLM response: {key}")
+
+        new_id = str(uuid.uuid4())
+
+        # 5. The 4-Part Atomic Write
         db = DBManager()
         conn = db.connect()
+
         try:
             with conn.cursor() as cur:
                 # A. FOUNDATION (Chronos, Catalyst)
