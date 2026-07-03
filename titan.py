@@ -1540,8 +1540,12 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
     # --- ACTION: SYNC (The Retro-Weaver) ---
     if action == "sync":
         gate = payload.get("gate_threshold", 5)
-        # Check for Orphaned Lithographs (Nodes in chronicles but not in foundation)
-        orphans = db.get_orphaned_lithographs(limit=10)
+        # DEFINE THE VARIABLE
+        batch_size = payload.get("batch_size", 1) 
+        
+        # Check for Orphaned Lithographs
+        # USE THE VARIABLE
+        orphans = db.get_orphaned_lithographs(limit=batch_size) 
         if orphans:
             o_id, o_text = orphans[0]
             log(f"SYNC: Found Orphaned Lithograph {o_id}. Refracting...")
@@ -1553,8 +1557,9 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
                 "total_synapses": synapses,
             }
 
-        # Check for Unwoven Holograms (Nodes in foundation but with zero links)
-        unwoven = db.get_unwoven_holograms(limit=5)
+        # Check for Unwoven Holograms
+        # USE THE VARIABLE
+        unwoven = db.get_unwoven_holograms(limit=batch_size) 
         if unwoven:
             h_id, h_text = unwoven[0]
             log(f"SYNC: Found Unwoven Hologram {h_id}. Weaving...")
