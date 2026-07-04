@@ -222,7 +222,7 @@ class MockResponse:
     def __init__(self, text):
         self.text = text
 
-def generate_with_fallback(contents, system_prompt=None, temperature=1):
+def generate_with_fallback(contents, system_prompt=None, temperature=0.7):
     # --- LOCAL NODE (OLLAMA) ---
     try:
         log(f"TRANSMITTING TO LOCAL NODE: {OLLAMA_MODEL}...")
@@ -1786,7 +1786,7 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
             response = generate_with_fallback(
                 contents=[f"{active_file_context}\nARCHITECT: {query}{echo_prompt}"],
                 system_prompt=TITAN_SYSTEM_PROMPT,
-                temperature=1
+                temperature=0.7
             )
             ai_text = response.text
 
