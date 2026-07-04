@@ -728,6 +728,11 @@ class DBManager:
         try:
 
             conn = self.connect()
+
+            sql_query = "SELECT id, weighted_score, memory_text, created_at FROM chronicles WHERE is_active = TRUE AND memory_text ILIKE %s ORDER BY weighted_score DESC, created_at DESC LIMIT %s;"
+            print(f"[DEBUG] Executing SQL: {sql_query}")
+            print(f"[DEBUG] With Params: %{query_text}%")
+
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -740,6 +745,7 @@ class DBManager:
                     (f"%{query_text}%", limit),
                 )
                 rows = cur.fetchall()
+                print(f"[DEBUG] Found {len(rows)} rows.") # See if it actually finds anything
             results = []
             for r in rows:
                 results.append(
