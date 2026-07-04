@@ -726,7 +726,7 @@ class DBManager:
     def search_lithograph(self, query_text, token_cache, limit=5):
         conn = None
         try:
-            compressed_query = encode_memory(query_text, token_cache)
+
             conn = self.connect()
             with conn.cursor() as cur:
                 cur.execute(
@@ -737,7 +737,7 @@ class DBManager:
                     ORDER BY weighted_score DESC, created_at DESC 
                     LIMIT %s;
                 """,
-                    (f"%{compressed_query}%", limit),
+                    (f"%{query_text}%", limit),
                 )
                 rows = cur.fetchall()
             results = []
