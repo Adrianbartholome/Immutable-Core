@@ -1683,7 +1683,7 @@ async def unified_titan_endpoint(request: Request, background_tasks: BackgroundT
 
     # --- ACTION: SEARCH ---
     if action == "search":
-        return db.search_lithograph(payload.get("query"), token_cache)
+        results = db.search_lithograph(payload.get("query"), token_cache)
         return {"status": "SUCCESS", "results": results}
 
     # --- ACTION: DELETE/PURGE/RESTORE/REHASH ---
